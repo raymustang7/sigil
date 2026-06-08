@@ -27,6 +27,16 @@ final class VisualModeController {
     private let scanner = AccessibilityScanner()
     private let scanQueue = DispatchQueue(label: "com.sigil.visual", qos: .userInteractive)
 
+    /// User-managed list of apps/sites where Visual mode stays transparent.
+    private let blocklist: Blocklist
+    /// Cached "the current app/site is blocked" flag. Read on the per-keystroke path; refreshed
+    /// asynchronously (URL reads use AppleScript, which can block) and applied on main.
+    private var suppressedHere = false
+    /// Slow safety poll that re-checks the blocked state while engaged on a browser — catches
+    /// in-tab navigations that don't fire a focus/window change.
+    private var suppressionPoll: Timer?
+    private let suppressionQueue = DispatchQueue(label: "com.sigil.visual.suppress", qos: .userInitiated)
+
     private var state: State = .idle
     private var geometry = Geometry.snapshot()
     private var activeFrontPID: pid_t = 0
@@ -80,7 +90,7 @@ final class VisualModeController {
     /// an AX hit-test); larger sets aren't rendered anyway, so there's nothing to verify yet.
     private let visibilityCheckCap = 4
     /// Seconds the confirmation popup waits for Return before dismissing.
-    private let confirmSeconds = 2
+    private let confirmSeconds = 3
 
     /// Fired on the main thread whenever the mode turns on (`true`) or off (`false`), so the UI
     /// can show a menu-bar indicator while Visual mode is engaged.
@@ -94,11 +104,17 @@ final class VisualModeController {
     /// how many elements match and prompt the user to keep typing when there are too many.
     var onMatchesChange: ((Int) -> Void)?
 
+    /// Fired on the main thread when the mode becomes suppressed (`true`, with a label of the
+    /// blocking app/site) or resumes (`false`, `nil`), so the UI can reflect "paused here".
+    var onSuppressionChange: ((Bool, String?) -> Void)?
+
     private var workspaceObserver: NSObjectProtocol?
 
     var isActive: Bool { state != .idle }
 
-    init() {
+    init(blocklist: Blocklist) {
+        self.blocklist = blocklist
+
         // The mode is sticky and lets every key (incl. Cmd+Tab) through, so the front app can
         // change underneath us. When it does, the cached element set is stale — drop the query
         // and rescan the new front app so we never match a now-hidden window.
@@ -146,6 +162,8 @@ final class VisualModeController {
                 exit()
                 return true
             }
+            // Don't buffer/consume while suppressed on a blocked app/site — stay transparent.
+            if suppressedHere { return false }
             if isQueryBuildingKey(stroke) {
                 pendingStrokes.append(stroke)
                 return true
@@ -166,6 +184,10 @@ final class VisualModeController {
             exit()
             return true
         }
+
+        // On a blocked app/site Visual mode goes transparent: every key (bar the toggle above)
+        // passes straight through — no query building, no consumption.
+        if suppressedHere { return false }
 
         // Return confirms a pending navigation — the one ordinary key we intercept.
         if stroke.keyCode == KeyStroke.returnKey || stroke.keyCode == KeyStroke.enterKey {
@@ -293,6 +315,8 @@ final class VisualModeController {
         geometry = Geometry.snapshot()
         ensureFocusObserver(pid: activeFrontPID)
         refreshFocusState()
+        refreshSuppression()
+        startSuppressionPoll()
 
         let pid = activeFrontPID
         let bounds = geometry.axBounds
@@ -307,7 +331,7 @@ final class VisualModeController {
                 // Replay anything typed during the scan so early letters aren't lost.
                 let buffered = self.pendingStrokes
                 self.pendingStrokes = []
-                for stroke in buffered { self.observe(stroke) }
+                for stroke in buffered { _ = self.observe(stroke) }
                 self.cancelScheduledRecompute()
                 self.recompute()
             }
@@ -438,6 +462,7 @@ final class VisualModeController {
         geometry = Geometry.snapshot()
         ensureFocusObserver(pid: activeFrontPID)
         refreshFocusState()
+        refreshSuppression()
         let pid = activeFrontPID
         let bounds = geometry.axBounds
         scanQueue.async { [weak self] in
@@ -459,6 +484,7 @@ final class VisualModeController {
         cancelScheduledRecompute()
         cancelCountdown()
         stopFocusObserver()
+        stopSuppressionPoll()
         overlay.hide()
         panel.hide()
         labelled = []
@@ -467,10 +493,74 @@ final class VisualModeController {
         pendingTarget = nil
         textInputFocused = false
         textInputFocusedSince = nil
+        suppressedHere = false
         query = ""
         let wasActive = state != .idle
         state = .idle
         if wasActive { onActiveChange?(false) }
+    }
+
+    // MARK: - Blocklist suppression
+
+    /// Re-evaluate whether the current app/site is blocked, updating the cached `suppressedHere`
+    /// flag. App matching is cheap and synchronous; site matching needs the browser URL (AppleScript)
+    /// and is offloaded. Called from the main thread (activation, focus events, the poll, list edits).
+    func refreshSuppression() {
+        // Feature unused ⇒ never suppress, and never touch AppleScript, so users who haven't
+        // blocked anything are never shown an Automation prompt.
+        if blocklist.apps.isEmpty, blocklist.domains.isEmpty {
+            applySuppression(false, label: nil)
+            return
+        }
+        guard let front = NSWorkspace.shared.frontmostApplication else {
+            applySuppression(false, label: nil)
+            return
+        }
+        let bundleID = front.bundleIdentifier ?? ""
+
+        if blocklist.blocksApp(bundleID: bundleID) {
+            applySuppression(true, label: front.localizedName ?? bundleID)
+            return
+        }
+
+        // Only read a URL when there are blocked sites *and* the front app is a scriptable browser.
+        guard !blocklist.domains.isEmpty, BrowserURLReader.isSupportedBrowser(bundleID: bundleID) else {
+            applySuppression(false, label: nil)
+            return
+        }
+
+        suppressionQueue.async { [weak self] in
+            guard let self else { return }
+            let host = BrowserURLReader.currentURL(bundleID: bundleID)?.host
+            let blocked = host.map { self.blocklist.blocks(host: $0) } ?? false
+            DispatchQueue.main.async {
+                guard self.state == .active else { return }
+                self.applySuppression(blocked, label: blocked ? host : nil)
+            }
+        }
+    }
+
+    /// Commit a freshly computed suppression state on the main thread. On entering suppression we
+    /// tear down any in-progress typing/overlays so the mode is immediately transparent.
+    private func applySuppression(_ value: Bool, label: String?) {
+        guard value != suppressedHere else { return }
+        suppressedHere = value
+        if value { clearTyping() }
+        onSuppressionChange?(value, label)
+    }
+
+    private func startSuppressionPoll() {
+        stopSuppressionPoll()
+        let timer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
+            self?.refreshSuppression()
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        suppressionPoll = timer
+    }
+
+    private func stopSuppressionPoll() {
+        suppressionPoll?.invalidate()
+        suppressionPoll = nil
     }
 
     // MARK: - Focus detection
@@ -492,7 +582,11 @@ final class VisualModeController {
 
         let callback: AXObserverCallback = { _, _, _, refcon in
             guard let refcon else { return }
-            Unmanaged<VisualModeController>.fromOpaque(refcon).takeUnretainedValue().refreshFocusState()
+            let controller = Unmanaged<VisualModeController>.fromOpaque(refcon).takeUnretainedValue()
+            // A focus/window change can also mean a tab switch or navigation, so re-check both the
+            // text-field state and whether we've landed on a blocked app/site.
+            controller.refreshFocusState()
+            controller.refreshSuppression()
         }
 
         var observer: AXObserver?
@@ -545,7 +639,26 @@ final class VisualModeController {
         AXUIElementSetMessagingTimeout(system, 0.2)
         guard let value = AX.copyValue(system, kAXFocusedUIElementAttribute as String),
               CFGetTypeID(value) == AXUIElementGetTypeID() else { return false }
-        return Self.textInputRoles.contains(AX.role(value as! AXUIElement))
+        let element = value as! AXUIElement
+        AXUIElementSetMessagingTimeout(element, 0.2)
+        return Self.isEditableTextElement(element)
+    }
+
+    /// Whether `element` accepts text entry. A role whitelist alone is unreliable: Electron/Chromium
+    /// apps (Cursor, VS Code, Slack) surface their inputs with roles outside the native set, so a
+    /// search box there would otherwise be missed and Visual mode would eat the keystrokes instead
+    /// of letting them reach the box. We therefore also treat any element that exposes a text
+    /// *selection range* with a *settable value* as editable text — a signal that holds for native
+    /// fields and web/Electron inputs alike, while excluding read-only web areas (they expose a
+    /// range but no settable value, so typing still drives matching on ordinary web pages) and
+    /// controls like checkboxes or sliders (settable value but no text range).
+    private static func isEditableTextElement(_ element: AXUIElement) -> Bool {
+        if textInputRoles.contains(AX.role(element)) { return true }
+        if let subrole = AX.string(element, kAXSubroleAttribute as String), subrole == "AXSearchField" {
+            return true
+        }
+        let hasTextRange = AX.copyValue(element, kAXSelectedTextRangeAttribute as String) != nil
+        return hasTextRange && AX.isSettable(element, kAXValueAttribute as String)
     }
 
     /// Whether `scanned` is the element actually on top at its own centre — i.e. genuinely

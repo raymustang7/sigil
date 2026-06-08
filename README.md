@@ -73,10 +73,24 @@ The app runs as a menu-bar agent.
 - Once **2 or fewer** elements match they're highlighted on screen (numbered 1–2 when tied); keep
   typing to narrow, or press the **digit** to pick a tie
 - A unique best match gets an "↵ navigate to …" popup (centred, 1/3 down the screen) — press
-  **Return** within 2s to go there
+  **Return** within 3s to go there
 - After navigating the mode stays engaged and re-scans, so you can keep moving around
 - **Delete** or **Esc** — clear the current text (neither exits the mode)
 - Exit via the hotkey again, or **Exit Visual Mode** in the menu-bar menu
+
+**Blocklist** (Visual mode only) — keep the mode out of apps/sites where it gets in the way:
+
+- From the menu bar: **Block This App** (the frontmost app), **Block This Site** (the current
+  browser tab's domain), **Add Blocked Site…** (type a domain like `youtube.com`), and a
+  **Blocked ▸** submenu to remove entries
+- On a blocked app or site Visual mode goes transparent — every key passes straight through and no
+  query is built — while staying engaged, so it resumes the moment you leave. The dropdown shows
+  *"Paused on …"* while suppressed
+- Site matching covers subdomains (`youtube.com` blocks `www.`/`m.`/`music.youtube.com`)
+- The current site is read via the browser's scripting interface (Safari and Chrome-based browsers;
+  Firefox can't expose its URL, so block it by app instead). This needs **Automation permission**
+  for that browser — macOS prompts the first time. If it's denied or unavailable, Sigil simply
+  doesn't suppress (it never silently stops working)
 
 > Window titles are read via the Accessibility API, which only exposes windows on the current
 > Space. Windows on other Spaces are reachable by their app name.

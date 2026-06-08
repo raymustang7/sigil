@@ -24,5 +24,7 @@
     <true/>
     <key>NSPrincipalClass</key>
     <string>NSApplication</string>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>Sigil reads the active tab's URL from your browser to check it against your Visual-mode blocklist.</string>
 </dict>
 </plist>

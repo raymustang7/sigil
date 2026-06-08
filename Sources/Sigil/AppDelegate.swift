@@ -11,6 +11,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var visualQueryItem: NSMenuItem?
     /// Shows the current match count (and a "keep typing…" prompt) beneath the query.
     private var visualMatchesItem: NSMenuItem?
+    /// Parent of the dynamically rebuilt list of blocked apps/sites.
+    private var blockedSubmenuItem: NSMenuItem?
     private var permissionTimer: Timer?
 
     // Menu-bar presentation state.
@@ -18,6 +20,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var visualActive = false
     private var visualQuery = ""
     private var visualMatchCount = 0
+    /// Whether Visual mode is currently paused on a blocked app/site, and its label.
+    private var visualSuppressed = false
+    private var visualSuppressionLabel: String?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         setupStatusItem()
@@ -40,6 +45,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self else { return }
             self.visualMatchCount = count
             self.refreshQueryMenuItem()
+        }
+        coordinator.onVisualSuppressionChange = { [weak self] suppressed, label in
+            guard let self else { return }
+            self.visualSuppressed = suppressed
+            self.visualSuppressionLabel = label
+            self.refreshStatusPresentation()
+            self.refreshQueryMenuItem()
+        }
+        coordinator.blocklist.onChange = { [weak self] in
+            self?.rebuildBlockedSubmenu()
         }
 
         // Trigger the Accessibility prompt on first launch.
@@ -106,6 +121,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         exitVisual.isEnabled = false
         menu.addItem(exitVisual)
         exitVisualItem = exitVisual
+
+        menu.addItem(.separator())
+        menu.addItem(NSMenuItem(
+            title: "Block This App",
+            action: #selector(blockCurrentApp),
+            keyEquivalent: ""
+        ))
+        menu.addItem(NSMenuItem(
+            title: "Block This Site",
+            action: #selector(blockCurrentSite),
+            keyEquivalent: ""
+        ))
+        menu.addItem(NSMenuItem(
+            title: "Add Blocked Site…",
+            action: #selector(addBlockedSite),
+            keyEquivalent: ""
+        ))
+        let blocked = NSMenuItem(title: "Blocked", action: nil, keyEquivalent: "")
+        blocked.submenu = NSMenu(title: "Blocked")
+        menu.addItem(blocked)
+        blockedSubmenuItem = blocked
+
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(
             title: "Open Accessibility Settings…",
@@ -125,6 +162,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         item.menu = menu
         statusItem = item
         refreshStatusPresentation()
+        rebuildBlockedSubmenu()
     }
 
     private func updateStatusUI(running: Bool) {
@@ -147,9 +185,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             button.title = ""
             // A filled eye signals an in-progress query; the outline eye is the idle "watching" state.
             button.image = makeVisualIndicatorImage(filled: !visualQuery.isEmpty)
-            button.toolTip = visualQuery.isEmpty
-                ? "Sigil — Visual mode (type an element's text)"
-                : "Sigil — Visual mode: \(visualQuery)"
+            if visualSuppressed {
+                let where_ = visualSuppressionLabel.map { " on \($0)" } ?? " here"
+                button.toolTip = "Sigil — Visual mode paused\(where_)"
+            } else {
+                button.toolTip = visualQuery.isEmpty
+                    ? "Sigil — Visual mode (type an element's text)"
+                    : "Sigil — Visual mode: \(visualQuery)"
+            }
         } else {
             button.image = nil
             button.title = isRunning ? "⌘" : "⌘⚠︎"
@@ -161,11 +204,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func refreshQueryMenuItem() {
         if let item = visualQueryItem {
             item.isHidden = !visualActive
-            item.title = visualQuery.isEmpty ? "Query: (type an element's text)" : "Query: \(visualQuery)"
+            if visualSuppressed {
+                item.title = visualSuppressionLabel.map { "Paused on \($0)" } ?? "Paused here"
+            } else {
+                item.title = visualQuery.isEmpty ? "Query: (type an element's text)" : "Query: \(visualQuery)"
+            }
         }
         if let item = visualMatchesItem {
-            // Only meaningful once something is typed.
-            item.isHidden = !visualActive || visualQuery.isEmpty
+            // Only meaningful once something is typed and we aren't paused on a blocked destination.
+            item.isHidden = !visualActive || visualSuppressed || visualQuery.isEmpty
             item.title = matchesSummary(count: visualMatchCount)
         }
     }
@@ -227,6 +274,118 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func exitVisualMode() {
         coordinator.exitVisualMode()
+    }
+
+    // MARK: - Blocklist menu
+
+    /// Rebuild the "Blocked ▸" submenu from the current list: an Apps section and a Sites section,
+    /// each entry removable. Called at setup and on every blocklist change.
+    private func rebuildBlockedSubmenu() {
+        guard let submenu = blockedSubmenuItem?.submenu else { return }
+        submenu.removeAllItems()
+        let blocklist = coordinator.blocklist
+
+        if blocklist.apps.isEmpty, blocklist.domains.isEmpty {
+            let empty = NSMenuItem(title: "Nothing blocked", action: nil, keyEquivalent: "")
+            empty.isEnabled = false
+            submenu.addItem(empty)
+            return
+        }
+
+        if !blocklist.apps.isEmpty {
+            let header = NSMenuItem(title: "Apps", action: nil, keyEquivalent: "")
+            header.isEnabled = false
+            submenu.addItem(header)
+            for app in blocklist.apps {
+                let item = NSMenuItem(title: app.name, action: #selector(removeBlockedApp(_:)), keyEquivalent: "")
+                item.target = self
+                item.representedObject = app.bundleID
+                item.toolTip = "Remove \(app.bundleID)"
+                submenu.addItem(item)
+            }
+        }
+
+        if !blocklist.domains.isEmpty {
+            if !blocklist.apps.isEmpty { submenu.addItem(.separator()) }
+            let header = NSMenuItem(title: "Sites", action: nil, keyEquivalent: "")
+            header.isEnabled = false
+            submenu.addItem(header)
+            for domain in blocklist.domains {
+                let item = NSMenuItem(title: domain, action: #selector(removeBlockedDomain(_:)), keyEquivalent: "")
+                item.target = self
+                item.representedObject = domain
+                submenu.addItem(item)
+            }
+        }
+    }
+
+    @objc private func blockCurrentApp() {
+        guard let app = NSWorkspace.shared.frontmostApplication,
+              let bundleID = app.bundleIdentifier, !bundleID.isEmpty else {
+            presentInfo("Couldn’t determine the current app.")
+            return
+        }
+        coordinator.blocklist.addApp(bundleID: bundleID, name: app.localizedName ?? bundleID)
+        coordinator.refreshVisualSuppression()
+    }
+
+    @objc private func blockCurrentSite() {
+        guard let app = NSWorkspace.shared.frontmostApplication,
+              let bundleID = app.bundleIdentifier else {
+            presentInfo("Couldn’t determine the current app.")
+            return
+        }
+        // The URL read uses AppleScript, which must run off the main thread.
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let host = BrowserURLReader.currentURL(bundleID: bundleID)?.host
+            DispatchQueue.main.async {
+                guard let self else { return }
+                guard let host, Blocklist.normalize(host) != nil else {
+                    self.presentInfo("Couldn’t read the current site. “Block This Site” works in Safari and Chrome-based browsers, and needs Automation permission for that browser.")
+                    return
+                }
+                self.coordinator.blocklist.addDomain(raw: host)
+                self.coordinator.refreshVisualSuppression()
+            }
+        }
+    }
+
+    @objc private func addBlockedSite() {
+        let alert = NSAlert()
+        alert.messageText = "Add Blocked Site"
+        alert.informativeText = "Enter a domain to keep Visual mode out of (e.g. youtube.com). Subdomains are covered automatically."
+        alert.addButton(withTitle: "Add")
+        alert.addButton(withTitle: "Cancel")
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
+        field.placeholderString = "youtube.com"
+        alert.accessoryView = field
+        alert.window.initialFirstResponder = field
+
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        coordinator.blocklist.addDomain(raw: field.stringValue)
+        coordinator.refreshVisualSuppression()
+    }
+
+    @objc private func removeBlockedApp(_ sender: NSMenuItem) {
+        guard let bundleID = sender.representedObject as? String else { return }
+        coordinator.blocklist.removeApp(bundleID: bundleID)
+        coordinator.refreshVisualSuppression()
+    }
+
+    @objc private func removeBlockedDomain(_ sender: NSMenuItem) {
+        guard let domain = sender.representedObject as? String else { return }
+        coordinator.blocklist.removeDomain(domain)
+        coordinator.refreshVisualSuppression()
+    }
+
+    private func presentInfo(_ text: String) {
+        let alert = NSAlert()
+        alert.messageText = "Sigil"
+        alert.informativeText = text
+        alert.addButton(withTitle: "OK")
+        NSApp.activate(ignoringOtherApps: true)
+        alert.runModal()
     }
 
     @objc private func openAccessibilitySettings() {

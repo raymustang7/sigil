@@ -6,7 +6,11 @@ final class InputCoordinator {
     private let inputTap = InputTap()
     private let hintMode = HintModeController()
     private let switcher = WindowSwitcherController()
-    private let visualMode = VisualModeController()
+
+    /// Shared list of apps/sites where Visual mode stays transparent. Owned here so both the mode
+    /// controller (reads it) and the menu (mutates it) work off the same instance.
+    let blocklist = Blocklist()
+    private lazy var visualMode = VisualModeController(blocklist: blocklist)
 
     /// Forwarded from Visual mode: `true` when it turns on, `false` when it turns off.
     var onVisualModeActiveChange: ((Bool) -> Void)? {
@@ -23,9 +27,21 @@ final class InputCoordinator {
         didSet { visualMode.onMatchesChange = onVisualMatchesChange }
     }
 
+    /// Forwarded from Visual mode: `true` (with the app/site label) when it's paused on a blocked
+    /// destination, `false`/`nil` when it resumes.
+    var onVisualSuppressionChange: ((Bool, String?) -> Void)? {
+        didSet { visualMode.onSuppressionChange = onVisualSuppressionChange }
+    }
+
     /// Leave Visual mode (used by the menu-bar "Exit Visual Mode" item).
     func exitVisualMode() {
         visualMode.exit()
+    }
+
+    /// Re-evaluate Visual mode's suppression now (e.g. right after the blocklist is edited), so a
+    /// just-blocked site/app takes effect without waiting for the safety poll.
+    func refreshVisualSuppression() {
+        visualMode.refreshSuppression()
     }
 
     /// Starts intercepting input. Returns `false` if the event tap could not be created

@@ -23,6 +23,14 @@ enum AX {
         string(element, kAXRoleAttribute as String) ?? ""
     }
 
+    /// Whether `attribute` can be written on `element` (e.g. a text field's value is settable, a
+    /// static label's is not). Returns `false` on any error.
+    static func isSettable(_ element: AXUIElement, _ attribute: String) -> Bool {
+        var settable: DarwinBoolean = false
+        let result = AXUIElementIsAttributeSettable(element, attribute as CFString, &settable)
+        return result == .success && settable.boolValue
+    }
+
     static func children(_ element: AXUIElement) -> [AXUIElement] {
         guard let value = copyValue(element, kAXChildrenAttribute as String) else { return [] }
         // AXUIElement is a CFType; CFArray bridges to [AXUIElement].

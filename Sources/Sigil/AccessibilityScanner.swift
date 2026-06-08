@@ -11,6 +11,9 @@ struct ScannedElement {
     /// Web content often reports `AXPress` success without dispatching a DOM click. For elements
     /// under an `AXWebArea`, prefer a coordinate click first.
     let prefersSyntheticClick: Bool
+    /// Human-readable accessible name (title → description → string value), whitespace-collapsed.
+    /// Empty when the element exposes no usable text. Used by Visual mode to match typed text.
+    let label: String
 }
 
 /// Walks the Accessibility tree of the frontmost application and collects elements a user
@@ -87,12 +90,17 @@ final class AccessibilityScanner {
         kAXListRole as String,
     ]
 
-    /// Batched attribute fetch, ordered: role, position, size, enabled.
+    /// Batched attribute fetch, ordered: role, position, size, enabled, title, description, value.
+    /// Title/description/value drive Visual mode's text matching; folding them into the existing
+    /// single round-trip keeps them nearly free.
     private let scanAttributes = [
         kAXRoleAttribute as String,
         kAXPositionAttribute as String,
         kAXSizeAttribute as String,
         kAXEnabledAttribute as String,
+        kAXTitleAttribute as String,
+        kAXDescriptionAttribute as String,
+        kAXValueAttribute as String,
     ]
 
     /// Scan every visible window on screen — across all applications — for actionable elements,
@@ -152,6 +160,35 @@ final class AccessibilityScanner {
         }
 
         return dedupe(results)
+    }
+
+    /// Scan only the frontmost app's focused window (plus that app's menu bar) — the user's
+    /// current context. Used by Visual mode so typed text matches what's actually in front, never
+    /// elements from background apps or other/covered windows of the same app.
+    func scanFocusedContext(frontmostPID: pid_t, axBounds: CGRect) -> [ScannedElement] {
+        var results: [ScannedElement] = []
+        var visited = 0
+
+        let app = AXUIElementCreateApplication(frontmostPID)
+        AXUIElementSetMessagingTimeout(app, 0.4)
+        AX.setBool(app, "AXManualAccessibility", true)
+
+        if let window = focusedWindow(app) {
+            traverse(window, axBounds: axBounds, depth: 0, isInsideWebArea: false,
+                     visited: &visited, results: &results)
+        }
+        if let menuBar = axElement(app, kAXMenuBarAttribute as String) {
+            traverse(menuBar, axBounds: axBounds, depth: 0, isInsideWebArea: false,
+                     visited: &visited, results: &results)
+        }
+        return dedupe(results)
+    }
+
+    /// The window the user is actually working in: focused, else main, else the first window.
+    private func focusedWindow(_ app: AXUIElement) -> AXUIElement? {
+        axElement(app, kAXFocusedWindowAttribute as String)
+            ?? axElement(app, kAXMainWindowAttribute as String)
+            ?? AX.windows(app).first
     }
 
     /// A normal application window currently on screen, in AX/Quartz global coordinates.
@@ -303,7 +340,8 @@ final class AccessibilityScanner {
                     element: element,
                     frame: frame,
                     role: role,
-                    prefersSyntheticClick: nextIsInsideWebArea
+                    prefersSyntheticClick: nextIsInsideWebArea,
+                    label: Self.label(title: values[4], description: values[5], value: values[6])
                 ))
             }
 
@@ -338,6 +376,22 @@ final class AccessibilityScanner {
             }
         }
         return AX.children(element)
+    }
+
+    /// Pick the best accessible name from a batched (title, description, value) triple and
+    /// normalise it: trim, and collapse runs of whitespace/newlines to single spaces. Title is
+    /// preferred; description is the usual home of icon-button labels; a string value is the last
+    /// resort. Non-string values (slider numbers, checkbox booleans) are ignored.
+    private static func label(title: AnyObject?, description: AnyObject?, value: AnyObject?) -> String {
+        for candidate in [title, description, value] {
+            guard let text = candidate as? String else { continue }
+            let collapsed = text
+                .components(separatedBy: .whitespacesAndNewlines)
+                .filter { !$0.isEmpty }
+                .joined(separator: " ")
+            if !collapsed.isEmpty { return collapsed }
+        }
+        return ""
     }
 
     /// Decode an AX position + size pair (each a batched attribute value) into a rect.

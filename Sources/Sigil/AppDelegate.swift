@@ -4,8 +4,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let coordinator = InputCoordinator()
     private let activator = AccessibilityActivator()
     private var statusItem: NSStatusItem?
-    /// Lets the user leave the (sticky) Visual mode from the menu; enabled only while engaged.
-    private var exitVisualItem: NSMenuItem?
+    /// Toggles the (sticky) Visual mode from the menu; its title flips between Enter/Exit.
+    private var visualToggleItem: NSMenuItem?
     /// Shows the live Visual-mode query inside the dropdown (kept out of the menu-bar item so the
     /// bar item never grows wide enough for macOS to hide it next to the notch).
     private var visualQueryItem: NSMenuItem?
@@ -13,6 +13,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var visualMatchesItem: NSMenuItem?
     /// Parent of the dynamically rebuilt list of blocked apps/sites.
     private var blockedSubmenuItem: NSMenuItem?
+    /// The blocklist menu items (and their leading separator). Shown only while Visual mode is
+    /// engaged, since the blocklist only affects Visual mode — keeping them always visible implies
+    /// (wrongly) that hint mode and the switcher are blocked too.
+    private var blockMenuItems: [NSMenuItem] = []
     private var permissionTimer: Timer?
 
     // Menu-bar presentation state.
@@ -31,9 +35,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self else { return }
             self.visualActive = active
             if !active { self.visualQuery = "" }
-            self.exitVisualItem?.isEnabled = active
+            self.visualToggleItem?.title = active ? "Exit Visual Mode" : "Enter Visual Mode"
             self.refreshStatusPresentation()
             self.refreshQueryMenuItem()
+            self.refreshBlockMenuVisibility()
         }
         coordinator.onVisualQueryChange = { [weak self] query in
             guard let self else { return }
@@ -113,35 +118,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         matchesItem.isHidden = true
         menu.addItem(matchesItem)
         visualMatchesItem = matchesItem
-        let exitVisual = NSMenuItem(
-            title: "Exit Visual Mode",
-            action: #selector(exitVisualMode),
+        let visualToggle = NSMenuItem(
+            title: "Enter Visual Mode",
+            action: #selector(toggleVisualMode),
             keyEquivalent: ""
         )
-        exitVisual.isEnabled = false
-        menu.addItem(exitVisual)
-        exitVisualItem = exitVisual
+        menu.addItem(visualToggle)
+        visualToggleItem = visualToggle
 
-        menu.addItem(.separator())
-        menu.addItem(NSMenuItem(
-            title: "Block This App",
-            action: #selector(blockCurrentApp),
-            keyEquivalent: ""
-        ))
-        menu.addItem(NSMenuItem(
-            title: "Block This Site",
-            action: #selector(blockCurrentSite),
-            keyEquivalent: ""
-        ))
-        menu.addItem(NSMenuItem(
-            title: "Add Blocked Site…",
-            action: #selector(addBlockedSite),
-            keyEquivalent: ""
-        ))
+        let blockSeparator = NSMenuItem.separator()
+        menu.addItem(blockSeparator)
+        let blockApp = NSMenuItem(title: "Block This App", action: #selector(blockCurrentApp), keyEquivalent: "")
+        menu.addItem(blockApp)
+        let blockSite = NSMenuItem(title: "Block This Site", action: #selector(blockCurrentSite), keyEquivalent: "")
+        menu.addItem(blockSite)
+        let addSite = NSMenuItem(title: "Add Blocked Site…", action: #selector(addBlockedSite), keyEquivalent: "")
+        menu.addItem(addSite)
         let blocked = NSMenuItem(title: "Blocked", action: nil, keyEquivalent: "")
         blocked.submenu = NSMenu(title: "Blocked")
         menu.addItem(blocked)
         blockedSubmenuItem = blocked
+        blockMenuItems = [blockSeparator, blockApp, blockSite, addSite, blocked]
 
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(
@@ -163,6 +160,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem = item
         refreshStatusPresentation()
         rebuildBlockedSubmenu()
+        refreshBlockMenuVisibility()
+    }
+
+    /// Show the blocklist items only while Visual mode is engaged (the blocklist is Visual-mode only).
+    private func refreshBlockMenuVisibility() {
+        for item in blockMenuItems { item.isHidden = !visualActive }
     }
 
     private func updateStatusUI(running: Bool) {
@@ -272,8 +275,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .withSymbolConfiguration(config)
     }
 
-    @objc private func exitVisualMode() {
-        coordinator.exitVisualMode()
+    @objc private func toggleVisualMode() {
+        coordinator.toggleVisualMode()
     }
 
     // MARK: - Blocklist menu

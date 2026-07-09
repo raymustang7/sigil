@@ -38,6 +38,15 @@ final class InputCoordinator {
         visualMode.exit()
     }
 
+    /// Toggle Visual mode from the menu bar — same as pressing the activation chord.
+    func toggleVisualMode() {
+        if visualMode.isActive {
+            visualMode.exit()
+        } else {
+            visualMode.activate()
+        }
+    }
+
     /// Re-evaluate Visual mode's suppression now (e.g. right after the blocklist is edited), so a
     /// just-blocked site/app takes effect without waiting for the safety poll.
     func refreshVisualSuppression() {

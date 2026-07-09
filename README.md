@@ -75,7 +75,8 @@ The app runs as a menu-bar agent.
 - A unique best match gets an "↵ navigate to …" popup (centred, 1/3 down the screen) — press
   **Return** within 3s to go there
 - After navigating the mode stays engaged and re-scans, so you can keep moving around
-- **Delete** or **Esc** — clear the current text (neither exits the mode)
+- **Delete** removes the last character; **Cmd+Delete** or **Esc** clears the whole query (none
+  exit the mode)
 - Exit via the hotkey again, or **Exit Visual Mode** in the menu-bar menu
 
 **Blocklist** (Visual mode only) — keep the mode out of apps/sites where it gets in the way:

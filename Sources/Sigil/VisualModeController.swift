@@ -24,6 +24,9 @@ final class VisualModeController {
 
     private let overlay = OverlayController()
     private let panel = VisualOverlayController()
+    private let warp = VisualWarpController()
+    private let toast = VisualToastController()
+    private let queryHUD = VisualQueryHUDController()
     private let scanner = AccessibilityScanner()
     private let scanQueue = DispatchQueue(label: "com.sigil.visual", qos: .userInteractive)
 
@@ -237,8 +240,13 @@ final class VisualModeController {
     /// should therefore be consumed so it can't also fire an app/OS shortcut), `false` if Sigil
     /// ignored it and it should pass through to the app.
     private func observe(_ stroke: KeyStroke) -> Bool {
-        // Shortcut chords aren't label typing — never consume them (so Cmd+Tab etc. still work).
-        if stroke.hasCommand || stroke.hasControl || stroke.hasOption { return false }
+        // Cmd+Delete is the standard "delete the whole field" chord, so we let it past the chord
+        // gate below; every other modifier chord isn't label typing and passes straight through.
+        let isCmdDelete = stroke.keyCode == KeyStroke.delete
+            && stroke.hasCommand && !stroke.hasControl && !stroke.hasOption
+        if (stroke.hasCommand || stroke.hasControl || stroke.hasOption), !isCmdDelete {
+            return false
+        }
 
         // Keep the focus state fresh for subsequent keystrokes without blocking this one.
         refreshFocusState()
@@ -250,16 +258,24 @@ final class VisualModeController {
             return false
         }
 
-        // Delete/Esc reset the query so a new target can be typed. Consume them only when there's a
-        // query to clear (otherwise they're free to reach the app, e.g. Esc to close a dialog).
-        // Refresh the snapshot too, so the next target matches the current screen.
-        if stroke.keyCode == KeyStroke.escape || stroke.keyCode == KeyStroke.delete {
+        // Cmd+Delete and Esc clear the whole query (and rescan so the next target matches the current
+        // screen); plain Delete removes a single character — the standard editing behaviour. All are
+        // consumed only when there's a query to act on, else they're free to reach the app.
+        if isCmdDelete || stroke.keyCode == KeyStroke.escape {
             if !query.isEmpty {
                 clearTyping()
                 rescan()
                 return true
             }
             return false
+        }
+        if stroke.keyCode == KeyStroke.delete {
+            guard !query.isEmpty else { return false }
+            query.removeLast()
+            onQueryChange?(query)
+            refreshQueryHUD()
+            scheduleRecompute()
+            return true
         }
 
         // Letters, spaces and periods drive matching; spaces and periods let multi-word and
@@ -280,8 +296,19 @@ final class VisualModeController {
         // Extending the query is cheap and the menu-bar indicator should track it live; the costly
         // rank-and-verify pass is debounced so a burst of typing triggers it just once.
         onQueryChange?(query)
+        refreshQueryHUD()
         scheduleRecompute()
         return true
+    }
+
+    /// Show the bottom-right HUD with the captured keys while actively typing a query; hide it
+    /// whenever there's nothing to show (empty query, paused on a blocked destination, or idle).
+    private func refreshQueryHUD() {
+        if state == .active, !suppressedHere, !query.isEmpty {
+            queryHUD.show(query)
+        } else {
+            queryHUD.hide()
+        }
     }
 
     /// Debounce the expensive recompute: each keystroke reschedules it, so it fires only after a
@@ -310,6 +337,7 @@ final class VisualModeController {
         }
         state = .activating
         onActiveChange?(true)
+        warp.play("Visual Mode Activated", entering: true)
         query = ""
         activeFrontPID = frontApp.processIdentifier
         geometry = Geometry.snapshot()
@@ -338,35 +366,47 @@ final class VisualModeController {
         }
     }
 
-    /// Re-rank against the current query, badge any ≤2 candidates, and offer the popup when one
-    /// element uniquely matches.
+    /// Re-scan the focused window, rank against the current query, badge any ≤2 candidates, and offer
+    /// the popup when one element uniquely matches.
     ///
-    /// Ranking is cheap (in-memory) and runs inline, but verifying that a candidate is genuinely
-    /// visible costs synchronous AX hit-tests that can be slow for busy apps (e.g. Chrome). This
-    /// method is reached from the event-tap callback on the *main* run loop, so those hit-tests are
-    /// offloaded to `scanQueue` and the result applied back on main — otherwise a few quick
-    /// keystrokes would stall the main thread (dropping the status item, tripping the tap timeout).
+    /// We deliberately **re-scan every time** rather than ranking a cached set: on-screen content can
+    /// change with no focus/window/app event at all (search results loading, dynamic lists, live
+    /// updates), which would otherwise leave the cached elements — and thus the matches — stale until
+    /// some unrelated event happened to trigger a rescan. The scan and the (synchronous, sometimes
+    /// slow) visibility hit-tests run on `scanQueue`, never the main/event-tap thread, and the call
+    /// is debounced so a burst of typing triggers just one pass. A token discards results from a pass
+    /// the query has already moved past.
     private func recompute() {
         cancelCountdown()
         onQueryChange?(query)
-        let ranked = Self.rank(query, in: labelled)
 
-        // Sets too big to render don't need verifying (we won't badge them); apply inline.
-        guard !query.isEmpty, ranked.count >= 1, ranked.count <= visibilityCheckCap else {
-            applyMatches(ranked)
+        guard !query.isEmpty else {
+            applyMatches([])
             return
         }
 
+        // Re-snapshot screen geometry so badge placement tracks the current layout.
+        geometry = Geometry.snapshot()
+
         recomputeToken += 1
         let token = recomputeToken
+        let pid = activeFrontPID
+        let bounds = geometry.axBounds
+        let q = query
         scanQueue.async { [weak self] in
             guard let self else { return }
-            // Drop any candidate that isn't actually on top at its reported location (covered,
-            // hidden toolbar/overflow, stale frame) — prevents "phantom" hints over empty space.
-            let visible = ranked.filter { self.isOnTopAtCenter($0) }
+            let elements = self.scanner.scanFocusedContext(frontmostPID: pid, axBounds: bounds)
+            let labelled = elements.filter { !$0.label.isEmpty }
+            let ranked = Self.rank(q, in: labelled)
+            // Only verify on-screen visibility for small sets (each check is an AX hit-test); larger
+            // sets aren't badged anyway. This drops candidates that are covered or off-screen.
+            let result = (ranked.count >= 1 && ranked.count <= self.visibilityCheckCap)
+                ? ranked.filter { self.isOnTopAtCenter($0) }
+                : ranked
             DispatchQueue.main.async {
                 guard self.state == .active, token == self.recomputeToken else { return }
-                self.applyMatches(visible)
+                self.labelled = labelled
+                self.applyMatches(result)
             }
         }
     }
@@ -430,7 +470,12 @@ final class VisualModeController {
     private func navigate(_ target: ScannedElement) {
         // Visual mode is sticky: activate the target but remain engaged so the user can keep
         // navigating. Tear the overlays down first so a synthetic click lands on the app.
+        let targetsTextInput = Self.textInputRoles.contains(target.role)
         clearTyping()
+        if targetsTextInput {
+            textInputFocused = true
+            textInputFocusedSince = Date(timeIntervalSinceNow: -textFieldStabilityWindow)
+        }
         DispatchQueue.main.async {
             ActionExecutor.execute(target)
         }
@@ -452,6 +497,7 @@ final class VisualModeController {
         pendingTarget = nil
         onQueryChange?("")
         onMatchesChange?(0)
+        refreshQueryHUD()
     }
 
     /// Re-walk the current front app's focused window so continued navigation matches what's
@@ -487,6 +533,7 @@ final class VisualModeController {
         stopSuppressionPoll()
         overlay.hide()
         panel.hide()
+        queryHUD.hide()
         labelled = []
         matches = []
         pendingStrokes = []
@@ -497,7 +544,10 @@ final class VisualModeController {
         query = ""
         let wasActive = state != .idle
         state = .idle
-        if wasActive { onActiveChange?(false) }
+        if wasActive {
+            onActiveChange?(false)
+            toast.show("Visual Mode Deactivated")
+        }
     }
 
     // MARK: - Blocklist suppression
@@ -547,6 +597,7 @@ final class VisualModeController {
         suppressedHere = value
         if value { clearTyping() }
         onSuppressionChange?(value, label)
+        refreshQueryHUD()
     }
 
     private func startSuppressionPoll() {
@@ -702,10 +753,11 @@ final class VisualModeController {
 
     // MARK: - Matching
 
-    /// Rank elements by how well their label matches `query`: exact equality wins, then a prefix
-    /// match, then a substring match. Only the best non-empty tier is returned (so an exact match
-    /// is never diluted by longer labels that merely contain the query), sorted top-to-bottom for
-    /// stable badge numbering.
+    /// Rank elements by how well their label matches `query`. An **exact** match is decisive: if any
+    /// exists, only exact matches are returned (so a unique one auto-selects, and weaker matches
+    /// never dilute it). Otherwise prefix matches and substring matches are combined — prefix first,
+    /// substring below — so `nangs` still matches "Tame Impala - Nangs" when nothing matches exactly.
+    /// Each tier is ordered top-to-bottom for stable badge numbering.
     static func rank(_ query: String, in elements: [ScannedElement]) -> [ScannedElement] {
         let q = query.lowercased().trimmingCharacters(in: .whitespaces)
         guard !q.isEmpty else { return [] }
@@ -724,10 +776,14 @@ final class VisualModeController {
             }
         }
 
-        let tier = !exact.isEmpty ? exact : (!prefix.isEmpty ? prefix : substring)
-        return tier.sorted { lhs, rhs in
+        let byPosition: (ScannedElement, ScannedElement) -> Bool = { lhs, rhs in
             lhs.frame.minY != rhs.frame.minY ? lhs.frame.minY < rhs.frame.minY
                                              : lhs.frame.minX < rhs.frame.minX
         }
+        // An exact match wins outright — return it alone so it auto-selects, no substrings trailing.
+        if !exact.isEmpty {
+            return exact.sorted(by: byPosition)
+        }
+        return prefix.sorted(by: byPosition) + substring.sorted(by: byPosition)
     }
 }

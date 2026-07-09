@@ -19,12 +19,11 @@ enum ActionExecutor {
         // deliver it to a non-focused window without activating that window first — so it is
         // used only when no AX action applies, and raises the target window when needed.
 
-        // Text inputs: focusing is the useful action, not "pressing".
+        // Text inputs: focusing is the useful action, not "pressing". Make the owning app/window
+        // key first; some apps accept AXFocused visually while keyboard events still belong
+        // elsewhere until the window has been activated.
         if textRoles.contains(scanned.role) {
-            if AX.setBool(element, kAXFocusedAttribute as String, true) {
-                return
-            }
-            click(scanned)
+            focusTextInput(scanned)
             return
         }
 
@@ -51,15 +50,45 @@ enum ActionExecutor {
         click(scanned)
     }
 
+    private static func focusTextInput(_ scanned: ScannedElement) {
+        let focus = {
+            if AX.setBool(scanned.element, kAXFocusedAttribute as String, true) {
+                Log.write("execute: role=\(scanned.role) via AXFocused")
+                return
+            }
+            Log.write("execute: role=\(scanned.role) via fallback synthetic click")
+            syntheticClick(atAX: CGPoint(x: scanned.frame.midX, y: scanned.frame.midY))
+        }
+
+        if activateOwningWindowIfNeeded(scanned) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05, execute: focus)
+        } else {
+            focus()
+        }
+    }
+
     /// Posts a synthetic click at the element centre. If the element's window isn't the focused
     /// window, it is raised first and the click deferred a beat, since a coordinate click only
     /// registers in the focused window.
     private static func click(_ scanned: ScannedElement) {
         let point = CGPoint(x: scanned.frame.midX, y: scanned.frame.midY)
 
-        guard let window = windowElement(of: scanned.element), !isFocusedWindow(window) else {
+        guard activateOwningWindowIfNeeded(scanned) else {
             syntheticClick(atAX: point)
             return
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+            syntheticClick(atAX: point)
+        }
+    }
+
+    /// Activates and raises the element's owning window when it is not already the focused window.
+    /// Returns `true` when activation was requested and callers should defer coordinate/AX actions
+    /// a beat for AppKit and the target app to settle.
+    private static func activateOwningWindowIfNeeded(_ scanned: ScannedElement) -> Bool {
+        guard let window = windowElement(of: scanned.element), !isFocusedWindow(window) else {
+            return false
         }
 
         var pid: pid_t = 0
@@ -72,11 +101,8 @@ enum ActionExecutor {
             }
         }
         AX.perform(window, kAXRaiseAction as String)
-        Log.write("execute: raised target window before click")
-
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-            syntheticClick(atAX: point)
-        }
+        Log.write("execute: raised target window before activation")
+        return true
     }
 
     /// The AX window an element belongs to, if it exposes one.

@@ -1,13 +1,16 @@
 import AppKit
 
-/// Sigil's Settings window. One row today — the hint budget — laid out as a labelled grid so
-/// further settings can be added as rows. Edits write straight through `SigilSettings`, which
-/// clamps and persists them; the next hint-mode activation picks them up.
+/// Sigil's Settings window: appearance and hint budget, laid out as a labelled grid so further
+/// settings can be added as rows. Edits write straight through `SigilSettings`, which clamps and
+/// persists them. Appearance applies immediately; the budget on the next hint-mode activation.
 final class SettingsWindowController: NSObject {
     private let settings: SigilSettings
     private var window: NSWindow?
     private var budgetField: NSTextField!
     private var budgetStepper: NSStepper!
+    private var appearanceControl: NSSegmentedControl!
+    /// Segment order for the appearance switcher.
+    private let appearanceModes: [AppearanceMode] = [.system, .light, .dark]
 
     init(settings: SigilSettings = .shared) {
         self.settings = settings
@@ -55,6 +58,24 @@ final class SettingsWindowController: NSObject {
     private func makeGrid() -> NSGridView {
         let range = SigilSettings.hintBudgetRange
 
+        let appearanceLabel = NSTextField(labelWithString: "Appearance:")
+        appearanceLabel.alignment = .right
+
+        let appearance = NSSegmentedControl(
+            labels: appearanceModes.map(Self.title(for:)),
+            trackingMode: .selectOne,
+            target: self,
+            action: #selector(appearanceChanged(_:))
+        )
+        appearanceControl = appearance
+
+        let appearanceCaption = NSTextField(wrappingLabelWithString:
+            "Colour scheme for hints and Sigil's windows. System follows your Mac's Light/Dark setting.")
+        appearanceCaption.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        appearanceCaption.textColor = .secondaryLabelColor
+        appearanceCaption.preferredMaxLayoutWidth = 300
+        appearanceCaption.widthAnchor.constraint(lessThanOrEqualToConstant: 300).isActive = true
+
         let label = NSTextField(labelWithString: "Hint budget:")
         label.alignment = .right
 
@@ -91,6 +112,8 @@ final class SettingsWindowController: NSObject {
         reset.bezelStyle = .rounded
 
         let grid = NSGridView(views: [
+            [appearanceLabel, appearance],
+            [NSGridCell.emptyContentView, appearanceCaption],
             [label, control],
             [NSGridCell.emptyContentView, caption],
             [NSGridCell.emptyContentView, reset],
@@ -99,10 +122,26 @@ final class SettingsWindowController: NSObject {
         grid.columnSpacing = 10
         grid.column(at: 0).xPlacement = .trailing
         grid.rowAlignment = .firstBaseline
+        // Breathing room between the appearance group and the budget group.
+        grid.row(at: 2).topPadding = 12
         return grid
     }
 
+    private static func title(for mode: AppearanceMode) -> String {
+        switch mode {
+        case .system: return "System"
+        case .light: return "Light"
+        case .dark: return "Dark"
+        }
+    }
+
     // MARK: - Actions
+
+    @objc private func appearanceChanged(_ sender: NSSegmentedControl) {
+        guard appearanceModes.indices.contains(sender.selectedSegment) else { return }
+        settings.appearanceMode = appearanceModes[sender.selectedSegment]
+        refresh()
+    }
 
     @objc private func fieldChanged(_ sender: NSTextField) {
         // Non-numeric input is ignored and the field snaps back to the stored value.
@@ -123,6 +162,7 @@ final class SettingsWindowController: NSObject {
     }
 
     private func refresh() {
+        appearanceControl.selectedSegment = appearanceModes.firstIndex(of: settings.appearanceMode) ?? 0
         budgetField.stringValue = String(settings.hintBudget)
         budgetStepper.integerValue = settings.hintBudget
     }

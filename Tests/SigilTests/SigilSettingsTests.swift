@@ -54,4 +54,32 @@ final class SigilSettingsTests: XCTestCase {
         settings.resetHintBudget()
         XCTAssertEqual(fired, 2)
     }
+
+    // MARK: - Appearance
+
+    func testAppearanceDefaultsToSystem() {
+        XCTAssertEqual(SigilSettings(defaults: defaults).appearanceMode, .system)
+    }
+
+    func testAppearancePersistsAcrossInstances() {
+        SigilSettings(defaults: defaults).appearanceMode = .dark
+        XCTAssertEqual(SigilSettings(defaults: defaults).appearanceMode, .dark)
+        XCTAssertEqual(defaults.string(forKey: SigilSettings.appearanceModeKey), "dark")
+    }
+
+    func testUnknownStoredAppearanceFallsBackToSystem() {
+        defaults.set("sepia", forKey: SigilSettings.appearanceModeKey)
+        XCTAssertEqual(SigilSettings(defaults: defaults).appearanceMode, .system)
+    }
+
+    func testAppearanceOnChangeFiresOnlyOnRealChange() {
+        let settings = SigilSettings(defaults: defaults)
+        var fired = 0
+        settings.onChange = { fired += 1 }
+        settings.appearanceMode = .system   // already the default: no event
+        settings.appearanceMode = .light
+        settings.appearanceMode = .light    // unchanged: no event
+        settings.appearanceMode = .dark
+        XCTAssertEqual(fired, 2)
+    }
 }

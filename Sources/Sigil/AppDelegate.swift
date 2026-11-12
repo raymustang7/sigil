@@ -30,6 +30,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var visualSuppressionLabel: String?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        applyAppearance()
+        SigilSettings.shared.onChange = { [weak self] in self?.applyAppearance() }
         setupStatusItem()
 
         coordinator.onVisualModeActiveChange = { [weak self] active in
@@ -395,6 +397,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         alert.addButton(withTitle: "OK")
         NSApp.activate(ignoringOtherApps: true)
         alert.runModal()
+    }
+
+    /// Forces Sigil's windows (hint overlay, switcher, Settings) into the chosen appearance, or
+    /// lets them follow the system. Overlays read `effectiveAppearance` when they draw, so the
+    /// next hint activation picks this up.
+    private func applyAppearance() {
+        switch SigilSettings.shared.appearanceMode {
+        case .system: NSApp.appearance = nil
+        case .light: NSApp.appearance = NSAppearance(named: .aqua)
+        case .dark: NSApp.appearance = NSAppearance(named: .darkAqua)
+        }
     }
 
     @objc private func openSettings() {

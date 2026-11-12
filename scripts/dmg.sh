@@ -49,6 +49,7 @@ fi
 if [ -n "${DEVELOPER_ID:-}" ]; then
     echo "==> Re-signing with Developer ID + hardened runtime…"
     codesign --force --options runtime --timestamp \
+        --entitlements "bundle/Sigil.entitlements" \
         --sign "$DEVELOPER_ID" "$APP_DIR"
     codesign --verify --strict --verbose=2 "$APP_DIR"
 fi

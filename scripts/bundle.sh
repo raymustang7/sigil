@@ -33,6 +33,7 @@ mkdir -p "$APP_DIR/Contents/Resources"
 
 cp "$BIN_PATH" "$APP_DIR/Contents/MacOS/Sigil"
 cp "bundle/Info.plist" "$APP_DIR/Contents/Info.plist"
+cp "bundle/AppIcon.icns" "$APP_DIR/Contents/Resources/AppIcon.icns"
 
 echo "==> Binary architectures: $(lipo -archs "$APP_DIR/Contents/MacOS/Sigil")"
 

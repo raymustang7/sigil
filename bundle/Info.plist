@@ -7,9 +7,11 @@
     <key>CFBundleDisplayName</key>
     <string>Sigil</string>
     <key>CFBundleIdentifier</key>
-    <string>com.sigil.app</string>
+    <string>com.rishierish.sigil</string>
     <key>CFBundleExecutable</key>
     <string>Sigil</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>

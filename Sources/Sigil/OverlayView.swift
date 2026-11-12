@@ -72,34 +72,24 @@ final class OverlayView: NSView {
         labelRect.origin.x = max(0, min(labelRect.origin.x, bounds.width - boxWidth))
         labelRect.origin.y = max(0, min(labelRect.origin.y, bounds.height - boxHeight))
 
+        // Flat fill with a soft drop shadow so the chip lifts off whatever is underneath.
         let path = NSBezierPath(roundedRect: labelRect, xRadius: cornerRadius, yRadius: cornerRadius)
-
-        // Glossy base: vertical gradient, lighter at the top edge fading to a deeper tone.
-        if let gradient = NSGradient(starting: palette.fillBottom, ending: palette.fillTop) {
-            gradient.draw(in: path, angle: 90)
-        } else {
-            palette.fillBottom.setFill()
-            path.fill()
-        }
-
-        // Top sheen for the "glossy" highlight, clipped to the rounded rect.
         NSGraphicsContext.saveGraphicsState()
-        path.addClip()
-        let sheenRect = CGRect(
-            x: labelRect.minX,
-            y: labelRect.midY,
-            width: labelRect.width,
-            height: labelRect.height / 2
-        )
-        if let sheen = NSGradient(starting: .clear, ending: palette.sheen) {
-            sheen.draw(in: NSBezierPath(rect: sheenRect), angle: 90)
-        }
+        palette.shadow.set()
+        palette.fill.setFill()
+        path.fill()
         NSGraphicsContext.restoreGraphicsState()
 
-        // Hairline border to crisp the edge.
-        palette.border.setStroke()
-        path.lineWidth = 1
-        path.stroke()
+        // Hairline edge, inset half a point so it sits crisply on the pixel grid. Its tone
+        // contrasts with the chip so the hint stays visible on both light and dark pages.
+        let edge = NSBezierPath(
+            roundedRect: labelRect.insetBy(dx: 0.5, dy: 0.5),
+            xRadius: cornerRadius - 0.5,
+            yRadius: cornerRadius - 0.5
+        )
+        edge.lineWidth = 1
+        palette.edge.setStroke()
+        edge.stroke()
 
         let textOrigin = CGPoint(
             x: labelRect.minX + horizontalPadding,
@@ -130,32 +120,54 @@ final class OverlayView: NSView {
     }
 }
 
-/// Theme-aware colors for a hint chip.
+/// Theme-aware colors for a hint chip, drawn from the earthy sage palette.
 private struct Palette {
-    let fillTop: NSColor      // top of the glossy gradient (lighter)
-    let fillBottom: NSColor   // bottom of the glossy gradient (deeper)
-    let sheen: NSColor        // top highlight for gloss
-    let border: NSColor
+    let fill: NSColor
+    let edge: NSColor         // 1px hairline around the chip
+    let shadow: NSShadow
     let text: NSColor         // untyped portion
-    let matchedText: NSColor  // already-typed prefix (de-emphasised)
+    let matchedText: NSColor  // already-typed prefix
 
-    /// Dark mode: shiny, almost-Apple-black finish with white text.
-    static let dark = Palette(
-        fillTop: NSColor(srgbRed: 0.24, green: 0.24, blue: 0.26, alpha: 0.98),
-        fillBottom: NSColor(srgbRed: 0.05, green: 0.05, blue: 0.06, alpha: 0.98),
-        sheen: NSColor(srgbRed: 1.0, green: 1.0, blue: 1.0, alpha: 0.16),
-        border: NSColor(srgbRed: 1.0, green: 1.0, blue: 1.0, alpha: 0.22),
-        text: NSColor.white,
-        matchedText: NSColor(srgbRed: 1.0, green: 1.0, blue: 1.0, alpha: 0.35)
+    private static func rgb(_ hex: UInt32, alpha: CGFloat = 1) -> NSColor {
+        NSColor(
+            srgbRed: CGFloat((hex >> 16) & 0xFF) / 255,
+            green: CGFloat((hex >> 8) & 0xFF) / 255,
+            blue: CGFloat(hex & 0xFF) / 255,
+            alpha: alpha
+        )
+    }
+
+    private static func dropShadow(alpha: CGFloat) -> NSShadow {
+        let shadow = NSShadow()
+        shadow.shadowColor = NSColor(white: 0, alpha: alpha)
+        shadow.shadowOffset = NSSize(width: 0, height: -1) // non-flipped: negative y is down
+        shadow.shadowBlurRadius = 3
+        return shadow
+    }
+
+    // Palette tokens.
+    private static let ivory: UInt32 = 0xF4F3F1
+    private static let sage: UInt32 = 0xA1A79E
+    private static let forest: UInt32 = 0x4E5A53
+    private static let pine: UInt32 = 0x3A443E
+    private static let ink: UInt32 = 0x232A26
+
+    /// Light mode: Sage chip, Ink text, typed prefix fades to Ivory, Forest edge.
+    static let light = Palette(
+        fill: rgb(sage, alpha: 0.98),
+        edge: rgb(forest, alpha: 0.6),
+        shadow: dropShadow(alpha: 0.22),
+        text: rgb(ink),
+        matchedText: rgb(ivory)
     )
 
-    /// Light mode: a soft grayish-blue chip with text even lighter than the chip.
-    static let light = Palette(
-        fillTop: NSColor(srgbRed: 0.50, green: 0.57, blue: 0.69, alpha: 0.97),
-        fillBottom: NSColor(srgbRed: 0.34, green: 0.42, blue: 0.55, alpha: 0.97),
-        sheen: NSColor(srgbRed: 1.0, green: 1.0, blue: 1.0, alpha: 0.30),
-        border: NSColor(srgbRed: 1.0, green: 1.0, blue: 1.0, alpha: 0.45),
-        text: NSColor(srgbRed: 0.98, green: 0.99, blue: 1.0, alpha: 1.0),
-        matchedText: NSColor(srgbRed: 1.0, green: 1.0, blue: 1.0, alpha: 0.5)
+    /// Dark mode: Pine chip, Ivory text, typed prefix in Sage, Sage edge so the chip holds up
+    /// on dark pages.
+    static let dark = Palette(
+        fill: rgb(pine, alpha: 0.98),
+        edge: rgb(sage, alpha: 0.75),
+        shadow: dropShadow(alpha: 0.35),
+        text: rgb(ivory),
+        matchedText: rgb(sage)
     )
 }

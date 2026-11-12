@@ -11,18 +11,6 @@ only match.
 
 Universal UI hinting via the macOS Accessibility APIs
 
-## Screenshots
-
-**Hint mode** : short labels on every actionable element:
-
-![Sigil hint mode, light hints](docs/images/sigil-light-mode.png)
-
-![Sigil hint mode, dark hints](docs/images/sigil-dark-mode.png)
-
-**Window switcher** : type a window title or app name and pick a numbered result:
-
-![Sigil window switcher](docs/images/sigil-window-search.png)
-
 ## How it works
 
 | Step | Component |

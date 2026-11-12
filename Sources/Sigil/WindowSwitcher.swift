@@ -120,6 +120,6 @@ enum WindowSwitcher {
             AX.perform(window, kAXRaiseAction as String)
             AX.setBool(window, kAXMainAttribute as String, true)
         }
-        Log.write("switcher: focus \(entry.appName) — \(entry.displayTitle)")
+        Log.write("switcher: focus \(entry.appName)")
     }
 }

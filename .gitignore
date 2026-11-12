@@ -6,3 +6,4 @@ dist/
 DerivedData/
 .DS_Store
 BUILD_PROMPT.md
+.superpowers/

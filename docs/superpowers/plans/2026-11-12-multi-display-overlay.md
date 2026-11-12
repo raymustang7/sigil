@@ -144,7 +144,7 @@ Same flags as today (see Global Constraints), content view `OverlayView(frame: C
 
 Run: `ARCHS=arm64 ./scripts/bundle.sh release && pkill -x Sigil; open .build/Sigil.app`
 Then, with windows open on all three displays, the user presses Ctrl+Space, waits 2 s, presses Esc, and repeats once; then types a hint on a non-main display.
-Expected in `/tmp/sigil.log`: `overlay: 3 displays, N hints → 3:a 1:b 2:c` with all three counts non-zero. Expected on screen: hints on all three displays on the right elements, no flicker or jump, the typed hint activates its element. Then unplug one display and repeat: log shows `2 displays`, no hints on the gone display, no crash.
+Expected in `~/Library/Logs/Sigil/sigil.log`: `overlay: 3 displays, N hints → 3:a 1:b 2:c` with all three counts non-zero. Expected on screen: hints on all three displays on the right elements, no flicker or jump, the typed hint activates its element. Then unplug one display and repeat: log shows `2 displays`, no hints on the gone display, no crash.
 
 - [ ] **Step 7: Run the unit tests again**
 

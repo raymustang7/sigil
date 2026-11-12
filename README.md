@@ -119,3 +119,7 @@ For a quick compile check during development:
 ```bash
 swift build
 ```
+
+## License
+
+[MIT](LICENSE)

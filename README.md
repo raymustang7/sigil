@@ -48,6 +48,11 @@ The app runs as a menu-bar agent.
 - **Esc** — cancel
 - **Delete** — undo the last typed character
 
+- Hints cover every visible window on every display. Up to a **hint budget** of elements are
+  labelled (default 800, adjustable in **Settings…** from the menu-bar menu), shared fairly
+  across windows so a busy front window never starves the ones behind it. Labels are two
+  letters; digits join the alphabet only when a scan needs more than 676 hints.
+
 **Window switcher**
 
 - **Control + Shift + Space** — open the window switcher
@@ -56,6 +61,10 @@ The app runs as a menu-bar agent.
 - **Esc** — cancel
 
 **Visual mode** (sticky — stays on until you toggle it off)
+
+> **Currently disabled** while it is evaluated: the hotkey is ignored and its menu items (including
+> the app/site blocklist, which only affects Visual mode) are hidden. Re-enable via
+> `SigilSettings.visualModeEnabled`.
 
 - **Control + Command + Option + Space** — toggle Visual mode on/off
 - While engaged, the menu-bar icon shows an eye badge on the `⌘`; the live query appears in the

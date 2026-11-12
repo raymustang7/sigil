@@ -70,10 +70,44 @@ final class AccessibilityScanner {
         kAXMenuBarRole as String,
     ]
 
-    private let maxResults = 250
+    /// Collection bounds. There is no result cap any more: the hint budget is applied *after*
+    /// collection by `HintBudget.allocate`, so what bounds a scan is node count and time.
     private let maxVisited = 12000
+    /// One window (or the menu bar / Dock) may not consume the whole node budget by itself.
+    private let maxVisitedPerSource = 6000
+    private let scanDeadline: TimeInterval = 1.5
     private let maxDepth = 70
     private let minSize: CGFloat = 4
+
+    /// Per-scan collection state shared by every traversal of that scan.
+    private struct CollectionLimits {
+        let maxVisited: Int
+        let maxVisitedPerSource: Int
+        let deadline: DispatchTime
+        var visited = 0
+        var sourceVisited = 0
+        /// Set once any bound trips; later sources are skipped and the log says so.
+        var tripped = false
+
+        mutating func beginSource() { sourceVisited = 0 }
+
+        /// Whether traversal must stop. Marks `tripped` as a side effect when a bound is hit.
+        mutating func exhausted() -> Bool {
+            if visited >= maxVisited || sourceVisited >= maxVisitedPerSource || DispatchTime.now() >= deadline {
+                tripped = true
+                return true
+            }
+            return false
+        }
+    }
+
+    private func makeLimits() -> CollectionLimits {
+        CollectionLimits(
+            maxVisited: maxVisited,
+            maxVisitedPerSource: maxVisitedPerSource,
+            deadline: .now() + scanDeadline
+        )
+    }
 
     /// Scan an application's windows for actionable elements.
     ///
@@ -104,18 +138,25 @@ final class AccessibilityScanner {
     ]
 
     /// Scan every visible window on screen — across all applications — for actionable elements,
-    /// plus the frontmost app's menu bar and the Dock.
+    /// plus the frontmost app's menu bar and the Dock, and keep at most `budget` of them.
     ///
     /// Visibility comes from the window server's on-screen list (front-to-back z-order): a window
     /// is included only if some part of it is not covered by the windows in front of it. The AX
     /// tree reports occluded windows as on-screen, so it cannot determine visibility on its own.
     ///
+    /// Candidates are collected per window first, then the budget is shared across windows by
+    /// `HintBudget.allocate` (equal share, leftovers passed on), so a busy front window can no
+    /// longer starve the ones behind it. The menu bar and Dock are small and always wanted, so
+    /// their items come off the top. Inside a trimmed window, native controls are kept before
+    /// web-page content.
+    ///
     /// - Parameters:
     ///   - frontmostPID: process id of the frontmost app (for the menu bar), captured on main.
     ///   - axBounds: visible screen bounds (AX coordinates) used to cull off-screen items.
-    func scanVisibleWindows(frontmostPID: pid_t, axBounds: CGRect) -> [ScannedElement] {
-        var results: [ScannedElement] = []
-        var visited = 0
+    ///   - budget: maximum number of elements to return (the user's hint budget).
+    func scanVisibleWindows(frontmostPID: pid_t, axBounds: CGRect, budget: Int) -> [ScannedElement] {
+        let start = DispatchTime.now()
+        var limits = makeLimits()
 
         // One AX application element (and one window list) per process, reused across that
         // process's visible windows.
@@ -135,53 +176,106 @@ final class AccessibilityScanner {
             return element
         }
 
-        for window in visibleOnScreenWindows() {
+        // 1. Collect candidates per source.
+        let windows = visibleOnScreenWindows()
+        var perWindow: [[ScannedElement]] = []
+        var windowsReached = 0
+        for window in windows {
+            if limits.exhausted() { break }
             let app = appElement(for: window.ownerPID)
             let axWindows = windowsCache[window.ownerPID] ?? AX.windows(app)
             windowsCache[window.ownerPID] = axWindows
-
             guard let axWindow = matchWindow(axWindows, to: window.bounds) else { continue }
+
+            var candidates: [ScannedElement] = []
+            limits.beginSource()
             traverse(axWindow, axBounds: axBounds, depth: 0, isInsideWebArea: false,
-                     visited: &visited, results: &results)
-            if results.count >= maxResults { break }
+                     limits: &limits, results: &candidates)
+            perWindow.append(candidates)
+            windowsReached += 1
         }
 
         // The app menu bar lives off the application element, not under any window.
-        if let menuBar = axElement(appElement(for: frontmostPID), kAXMenuBarAttribute as String) {
+        var menuBarItems: [ScannedElement] = []
+        if !limits.exhausted(), let menuBar = axElement(appElement(for: frontmostPID), kAXMenuBarAttribute as String) {
+            limits.beginSource()
             traverse(menuBar, axBounds: axBounds, depth: 0, isInsideWebArea: false,
-                     visited: &visited, results: &results)
+                     limits: &limits, results: &menuBarItems)
         }
 
         // The Dock is a separate app/process, so include it as an explicit scan root.
-        if let dock = dockElement() {
+        var dockItems: [ScannedElement] = []
+        if !limits.exhausted(), let dock = dockElement() {
             AXUIElementSetMessagingTimeout(dock, 0.4)
+            limits.beginSource()
             traverse(dock, axBounds: axBounds, depth: 0, isInsideWebArea: false,
-                     visited: &visited, results: &results)
+                     limits: &limits, results: &dockItems)
         }
 
-        return dedupe(results)
+        // 2. Dedupe identical frames across every source, keeping the first occurrence.
+        var groups = dedupe(groups: perWindow + [menuBarItems, dockItems])
+        let dock = groups.removeLast()
+        let menuBar = groups.removeLast()
+
+        // 3. Native controls before web content inside each window.
+        let ordered = groups.map { Self.nativeFirst($0) }
+
+        // 4. Menu bar and Dock off the top; equal share with leftovers across windows.
+        let fixed = menuBar + dock
+        let reserved = min(max(budget, 0), fixed.count)
+        let grants = HintBudget.allocate(demands: ordered.map(\.count), budget: max(budget, 0) - reserved)
+
+        var output: [ScannedElement] = []
+        for (candidates, grant) in zip(ordered, grants) {
+            output.append(contentsOf: candidates.prefix(grant))
+        }
+        output.append(contentsOf: fixed.prefix(reserved))
+
+        // 5. One line of accounting per scan.
+        let candidateCount = ordered.reduce(0) { $0 + $1.count } + fixed.count
+        let trimmed = zip(ordered, grants).filter { $0.count > $1 }.count
+        let elapsedMs = Double(DispatchTime.now().uptimeNanoseconds - start.uptimeNanoseconds) / 1_000_000
+        Log.write(String(
+            format: "scan: windows=%d/%d candidates=%d hints=%d trimmed=%d budget=%d visited=%d%@ in %.0fms",
+            windowsReached, windows.count, candidateCount, output.count, trimmed, budget, limits.visited,
+            limits.tripped ? " limit-hit" : "", elapsedMs
+        ))
+        return output
     }
 
     /// Scan only the frontmost app's focused window (plus that app's menu bar) — the user's
     /// current context. Used by Visual mode so typed text matches what's actually in front, never
-    /// elements from background apps or other/covered windows of the same app.
-    func scanFocusedContext(frontmostPID: pid_t, axBounds: CGRect) -> [ScannedElement] {
-        var results: [ScannedElement] = []
-        var visited = 0
+    /// elements from background apps or other/covered windows of the same app. At most `budget`
+    /// elements are returned, menu bar items first.
+    func scanFocusedContext(frontmostPID: pid_t, axBounds: CGRect, budget: Int) -> [ScannedElement] {
+        var limits = makeLimits()
 
         let app = AXUIElementCreateApplication(frontmostPID)
         AXUIElementSetMessagingTimeout(app, 0.4)
         AX.setBool(app, "AXManualAccessibility", true)
 
+        var windowItems: [ScannedElement] = []
         if let window = focusedWindow(app) {
+            limits.beginSource()
             traverse(window, axBounds: axBounds, depth: 0, isInsideWebArea: false,
-                     visited: &visited, results: &results)
+                     limits: &limits, results: &windowItems)
         }
-        if let menuBar = axElement(app, kAXMenuBarAttribute as String) {
+        var menuBarItems: [ScannedElement] = []
+        if !limits.exhausted(), let menuBar = axElement(app, kAXMenuBarAttribute as String) {
+            limits.beginSource()
             traverse(menuBar, axBounds: axBounds, depth: 0, isInsideWebArea: false,
-                     visited: &visited, results: &results)
+                     limits: &limits, results: &menuBarItems)
         }
-        return dedupe(results)
+
+        let groups = dedupe(groups: [windowItems, menuBarItems])
+        let window = Self.nativeFirst(groups[0]), menuBar = groups[1]
+        let reserved = min(max(budget, 0), menuBar.count)
+        return Array(window.prefix(max(budget, 0) - reserved)) + Array(menuBar.prefix(reserved))
+    }
+
+    /// Stable partition: elements outside web areas first, then web content, each in scan order.
+    private static func nativeFirst(_ elements: [ScannedElement]) -> [ScannedElement] {
+        elements.filter { !$0.prefersSyntheticClick } + elements.filter { $0.prefersSyntheticClick }
     }
 
     /// The window the user is actually working in: focused, else main, else the first window.
@@ -315,11 +409,12 @@ final class AccessibilityScanner {
         axBounds: CGRect,
         depth: Int,
         isInsideWebArea: Bool,
-        visited: inout Int,
+        limits: inout CollectionLimits,
         results: inout [ScannedElement]
     ) {
-        if visited >= maxVisited || results.count >= maxResults || depth > maxDepth { return }
-        visited += 1
+        if depth > maxDepth || limits.exhausted() { return }
+        limits.visited += 1
+        limits.sourceVisited += 1
 
         // One IPC for role + frame + enabled instead of four.
         let values = AX.multiAttributes(element, scanAttributes)
@@ -358,10 +453,10 @@ final class AccessibilityScanner {
                 axBounds: axBounds,
                 depth: depth + 1,
                 isInsideWebArea: nextIsInsideWebArea,
-                visited: &visited,
+                limits: &limits,
                 results: &results
             )
-            if results.count >= maxResults { return }
+            if limits.tripped { return }
         }
     }
 
@@ -407,17 +502,16 @@ final class AccessibilityScanner {
     }
 
     /// Drop elements whose bounds coincide (common when a control and its accessible wrapper
-    /// report identical frames), keeping the first (innermost-by-scan) occurrence.
-    private func dedupe(_ elements: [ScannedElement]) -> [ScannedElement] {
+    /// report identical frames), keeping the first occurrence across all groups in order. Runs
+    /// before budget allocation so duplicates never consume budget.
+    private func dedupe(groups: [[ScannedElement]]) -> [[ScannedElement]] {
         var seen = Set<String>()
-        var output: [ScannedElement] = []
-        for element in elements {
-            let f = element.frame
-            let key = "\(Int(f.minX.rounded()))|\(Int(f.minY.rounded()))|\(Int(f.width.rounded()))|\(Int(f.height.rounded()))"
-            if seen.insert(key).inserted {
-                output.append(element)
+        return groups.map { group in
+            group.filter { element in
+                let f = element.frame
+                let key = "\(Int(f.minX.rounded()))|\(Int(f.minY.rounded()))|\(Int(f.width.rounded()))|\(Int(f.height.rounded()))"
+                return seen.insert(key).inserted
             }
         }
-        return output
     }
 }

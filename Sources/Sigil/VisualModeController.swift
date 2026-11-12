@@ -348,9 +348,10 @@ final class VisualModeController {
 
         let pid = activeFrontPID
         let bounds = geometry.axBounds
+        let budget = SigilSettings.shared.hintBudget
         scanQueue.async { [weak self] in
             guard let self else { return }
-            let elements = self.scanner.scanFocusedContext(frontmostPID: pid, axBounds: bounds)
+            let elements = self.scanner.scanFocusedContext(frontmostPID: pid, axBounds: bounds, budget: budget)
             DispatchQueue.main.async {
                 guard self.state == .activating else { return }
                 self.labelled = elements.filter { !$0.label.isEmpty }
@@ -393,9 +394,10 @@ final class VisualModeController {
         let pid = activeFrontPID
         let bounds = geometry.axBounds
         let q = query
+        let budget = SigilSettings.shared.hintBudget
         scanQueue.async { [weak self] in
             guard let self else { return }
-            let elements = self.scanner.scanFocusedContext(frontmostPID: pid, axBounds: bounds)
+            let elements = self.scanner.scanFocusedContext(frontmostPID: pid, axBounds: bounds, budget: budget)
             let labelled = elements.filter { !$0.label.isEmpty }
             let ranked = Self.rank(q, in: labelled)
             // Only verify on-screen visibility for small sets (each check is an AX hit-test); larger
@@ -511,9 +513,10 @@ final class VisualModeController {
         refreshSuppression()
         let pid = activeFrontPID
         let bounds = geometry.axBounds
+        let budget = SigilSettings.shared.hintBudget
         scanQueue.async { [weak self] in
             guard let self else { return }
-            let elements = self.scanner.scanFocusedContext(frontmostPID: pid, axBounds: bounds)
+            let elements = self.scanner.scanFocusedContext(frontmostPID: pid, axBounds: bounds, budget: budget)
             DispatchQueue.main.async {
                 guard self.state == .active else { return }
                 self.labelled = elements.filter { !$0.label.isEmpty }

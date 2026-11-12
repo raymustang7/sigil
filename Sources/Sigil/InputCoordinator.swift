@@ -40,6 +40,7 @@ final class InputCoordinator {
 
     /// Toggle Visual mode from the menu bar — same as pressing the activation chord.
     func toggleVisualMode() {
+        guard SigilSettings.visualModeEnabled else { return }
         if visualMode.isActive {
             visualMode.exit()
         } else {
@@ -81,7 +82,7 @@ final class InputCoordinator {
             switcher.activate()
             return true
         }
-        if visualMode.isActivationHotkey(stroke) {
+        if SigilSettings.visualModeEnabled, visualMode.isActivationHotkey(stroke) {
             visualMode.activate()
             return true
         }

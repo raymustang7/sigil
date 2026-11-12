@@ -3,6 +3,7 @@ import AppKit
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let coordinator = InputCoordinator()
     private let activator = AccessibilityActivator()
+    private let settingsWindow = SettingsWindowController()
     private var statusItem: NSStatusItem?
     /// Toggles the (sticky) Visual mode from the menu; its title flips between Enter/Exit.
     private var visualToggleItem: NSMenuItem?
@@ -59,7 +60,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.refreshQueryMenuItem()
         }
         coordinator.blocklist.onChange = { [weak self] in
-            self?.rebuildBlockedSubmenu()
+            guard let self else { return }
+            self.rebuildBlockedSubmenu()
+            // A just-blocked site/app takes effect without waiting for the safety poll.
+            self.coordinator.refreshVisualSuppression()
         }
 
         // Trigger the Accessibility prompt on first launch.
@@ -125,6 +129,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         menu.addItem(visualToggle)
         visualToggleItem = visualToggle
+        visualToggle.isHidden = !SigilSettings.visualModeEnabled
 
         let blockSeparator = NSMenuItem.separator()
         menu.addItem(blockSeparator)
@@ -141,6 +146,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         blockMenuItems = [blockSeparator, blockApp, blockSite, addSite, blocked]
 
         menu.addItem(.separator())
+        menu.addItem(NSMenuItem(title: "Settings…", action: #selector(openSettings), keyEquivalent: ","))
         menu.addItem(NSMenuItem(
             title: "Open Accessibility Settings…",
             action: #selector(openAccessibilitySettings),
@@ -389,6 +395,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         alert.addButton(withTitle: "OK")
         NSApp.activate(ignoringOtherApps: true)
         alert.runModal()
+    }
+
+    @objc private func openSettings() {
+        settingsWindow.show()
     }
 
     @objc private func openAccessibilitySettings() {

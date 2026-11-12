@@ -21,9 +21,12 @@ final class HintModeController {
     private var boxes: [HintBox] = []
     private var typedBuffer = ""
     private var activeFrontPID: pid_t = 0
+    /// Hint budget captured from settings on the main thread at activation.
+    private var activeBudget = SigilSettings.defaultHintBudget
     private let scanQueue = DispatchQueue(label: "com.sigil.scan", qos: .userInteractive)
 
-    private let hintAlphabet = Set(HintGenerator.defaultAlphabet)
+    /// Keys accepted as hint characters; follows the alphabet the current labels were built with.
+    private var hintAlphabet = Set(HintGenerator.defaultAlphabet)
 
     /// Whether hint mode is currently showing or preparing hints.
     var isActive: Bool { state != .idle }
@@ -108,6 +111,7 @@ final class HintModeController {
         }
         state = .activating
         activeFrontPID = frontApp.processIdentifier
+        activeBudget = SigilSettings.shared.hintBudget
         // Capture display geometry on the main thread, then scan off-thread.
         geometry = Geometry.snapshot()
         scan(isRetry: false)
@@ -119,10 +123,11 @@ final class HintModeController {
     private func scan(isRetry: Bool) {
         let pid = activeFrontPID
         let bounds = geometry.axBounds
+        let budget = activeBudget
         scanQueue.async { [weak self] in
             guard let self else { return }
             let start = DispatchTime.now()
-            let elements = self.scanner.scanVisibleWindows(frontmostPID: pid, axBounds: bounds)
+            let elements = self.scanner.scanVisibleWindows(frontmostPID: pid, axBounds: bounds, budget: budget)
             let elapsedMs = Double(DispatchTime.now().uptimeNanoseconds - start.uptimeNanoseconds) / 1_000_000
             DispatchQueue.main.async {
                 self.finishScan(elements: elements, isRetry: isRetry, elapsedMs: elapsedMs)
@@ -153,6 +158,7 @@ final class HintModeController {
         }
 
         let labels = hintGenerator.generate(count: elements.count)
+        hintAlphabet = Set(HintGenerator.alphabet(forCount: labels.count))
         hintToElement.removeAll(keepingCapacity: true)
         boxes.removeAll(keepingCapacity: true)
         typedBuffer = ""

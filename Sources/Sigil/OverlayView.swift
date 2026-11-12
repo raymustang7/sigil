@@ -33,6 +33,12 @@ final class OverlayView: NSView {
         needsDisplay = true
     }
 
+    /// Change only the typed prefix, keeping the boxes already assigned to this view.
+    func setTypedPrefix(_ prefix: String) {
+        typedPrefix = prefix
+        needsDisplay = true
+    }
+
     override func draw(_ dirtyRect: NSRect) {
         NSColor.clear.set()
         dirtyRect.fill()

@@ -10,7 +10,12 @@ let package = Package(
         .executableTarget(
             name: "Sigil",
             path: "Sources/Sigil"
-        )
+        ),
+        .testTarget(
+            name: "SigilTests",
+            dependencies: ["Sigil"],
+            path: "Tests/SigilTests"
+        ),
     ],
     swiftLanguageModes: [.v5]
 )

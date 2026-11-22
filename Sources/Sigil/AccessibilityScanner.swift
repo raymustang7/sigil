@@ -14,6 +14,12 @@ struct ScannedElement {
     /// Human-readable accessible name (title → description → string value), whitespace-collapsed.
     /// Empty when the element exposes no usable text. Used by Visual mode to match typed text.
     let label: String
+
+    /// The same element with a corrected frame.
+    func with(frame: CGRect) -> ScannedElement {
+        ScannedElement(element: element, frame: frame, role: role,
+                       prefersSyntheticClick: prefersSyntheticClick, label: label)
+    }
 }
 
 /// Walks the Accessibility tree of the frontmost application and collects elements a user
@@ -78,6 +84,8 @@ final class AccessibilityScanner {
     private let scanDeadline: TimeInterval = 1.5
     private let maxDepth = 70
     private let minSize: CGFloat = 4
+    /// Time allowed for hit-testing hint anchors (see `anchorToVisible`).
+    private let anchoringBudget: DispatchTimeInterval = .milliseconds(250)
 
     /// Per-scan collection state shared by every traversal of that scan.
     private struct CollectionLimits {
@@ -229,16 +237,20 @@ final class AccessibilityScanner {
         for (candidates, grant) in zip(ordered, grants) {
             output.append(contentsOf: candidates.prefix(grant))
         }
+
+        // 5. Move window elements' left edge past anything of their own app drawn over it.
+        let anchoring = anchorToVisible(output, appElement: appElement)
+        output = anchoring.elements
         output.append(contentsOf: fixed.prefix(reserved))
 
-        // 5. One line of accounting per scan.
+        // 6. One line of accounting per scan.
         let candidateCount = ordered.reduce(0) { $0 + $1.count } + fixed.count
         let trimmed = zip(ordered, grants).filter { $0.count > $1 }.count
         let elapsedMs = Double(DispatchTime.now().uptimeNanoseconds - start.uptimeNanoseconds) / 1_000_000
         Log.write(String(
-            format: "scan: windows=%d/%d candidates=%d hints=%d trimmed=%d budget=%d visited=%d%@ in %.0fms",
+            format: "scan: windows=%d/%d candidates=%d hints=%d trimmed=%d budget=%d visited=%d%@ anchored=%d/%d (%.0fms) in %.0fms",
             windowsReached, windows.count, candidateCount, output.count, trimmed, budget, limits.visited,
-            limits.tripped ? " limit-hit" : "", elapsedMs
+            limits.tripped ? " limit-hit" : "", anchoring.moved, anchoring.checked, anchoring.elapsedMs, elapsedMs
         ))
         return output
     }
@@ -271,6 +283,33 @@ final class AccessibilityScanner {
         let window = Self.nativeFirst(groups[0]), menuBar = groups[1]
         let reserved = min(max(budget, 0), menuBar.count)
         return Array(window.prefix(max(budget, 0) - reserved)) + Array(menuBar.prefix(reserved))
+    }
+
+    /// Hit-test each element's left edge in its own app and move the frame's left edge past
+    /// whatever is drawn on top there (see `VisibleAnchor`). Bounded by a deadline: elements not
+    /// reached in time keep their reported frame.
+    private func anchorToVisible(
+        _ elements: [ScannedElement],
+        appElement: (pid_t) -> AXUIElement
+    ) -> (elements: [ScannedElement], moved: Int, checked: Int, elapsedMs: Double) {
+        let start = DispatchTime.now()
+        let deadline = start + anchoringBudget
+        var moved = 0, checked = 0
+        let result = elements.map { element -> ScannedElement in
+            guard DispatchTime.now() < deadline else { return element }
+            var pid: pid_t = 0
+            guard AXUIElementGetPid(element.element, &pid) == .success else { return element }
+            let app = appElement(pid)
+            checked += 1
+            let frame = VisibleAnchor.visibleFrame(element.frame) { point in
+                VisibleAnchor.hit(app, at: point, for: element.element)
+            }
+            guard frame != element.frame else { return element }
+            moved += 1
+            return element.with(frame: frame)
+        }
+        let elapsedMs = Double(DispatchTime.now().uptimeNanoseconds - start.uptimeNanoseconds) / 1_000_000
+        return (result, moved, checked, elapsedMs)
     }
 
     /// Stable partition: elements outside web areas first, then web content, each in scan order.

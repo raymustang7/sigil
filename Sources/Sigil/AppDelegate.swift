@@ -4,6 +4,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let coordinator = InputCoordinator()
     private let activator = AccessibilityActivator()
     private let settingsWindow = SettingsWindowController()
+    /// The "Workspaces" submenu: save and restore per-display window layouts.
+    private let workspaces = WorkspaceMenuController()
     private var statusItem: NSStatusItem?
     /// Toggles the (sticky) Visual mode from the menu; its title flips between Enter/Exit.
     private var visualToggleItem: NSMenuItem?
@@ -147,6 +149,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         blockedSubmenuItem = blocked
         blockMenuItems = [blockSeparator, blockApp, blockSite, addSite, blocked]
 
+        menu.addItem(.separator())
+        menu.addItem(workspaces.menuItem)
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Settings…", action: #selector(openSettings), keyEquivalent: ","))
         menu.addItem(NSMenuItem(

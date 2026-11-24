@@ -1,15 +1,18 @@
 import AppKit
 
-/// Sigil's Settings window: appearance and hint budget, laid out as a labelled grid so further
+/// Sigil's Settings window: appearance, hint budget and workspaces, laid out as a labelled grid so further
 /// settings can be added as rows. Edits write straight through `SigilSettings`, which clamps and
-/// persists them. Appearance applies immediately; the budget on the next hint-mode activation.
+/// persists them. Appearance applies immediately; the budget on the next hint-mode activation;
+/// the workspace option on the next workspace switch.
 final class SettingsWindowController: NSObject {
     private let settings: SigilSettings
     private var window: NSWindow?
     private var budgetField: NSTextField!
     private var budgetStepper: NSStepper!
-    private var appearanceControl: NSSegmentedControl!
-    /// Segment order for the appearance switcher.
+    /// One radio button per appearance mode, in `appearanceModes` order.
+    private var appearanceButtons: [NSButton] = []
+    private var resaveCheckbox: NSButton!
+    /// Radio-button order for the appearance switcher.
     private let appearanceModes: [AppearanceMode] = [.system, .light, .dark]
 
     init(settings: SigilSettings = .shared) {
@@ -61,13 +64,19 @@ final class SettingsWindowController: NSObject {
         let appearanceLabel = NSTextField(labelWithString: "Appearance:")
         appearanceLabel.alignment = .right
 
-        let appearance = NSSegmentedControl(
-            labels: appearanceModes.map(Self.title(for:)),
-            trackingMode: .selectOne,
-            target: self,
-            action: #selector(appearanceChanged(_:))
-        )
-        appearanceControl = appearance
+        // Radio buttons sharing one action and one superview form a mutually exclusive group.
+        appearanceButtons = appearanceModes.enumerated().map { index, mode in
+            let button = NSButton(
+                radioButtonWithTitle: Self.title(for: mode),
+                target: self,
+                action: #selector(appearanceChanged(_:))
+            )
+            button.tag = index
+            return button
+        }
+        let appearance = NSStackView(views: appearanceButtons)
+        appearance.orientation = .horizontal
+        appearance.spacing = 14
 
         let appearanceCaption = NSTextField(wrappingLabelWithString:
             "Colour scheme for hints and Sigil's windows. System follows your Mac's Light/Dark setting.")
@@ -111,12 +120,32 @@ final class SettingsWindowController: NSObject {
         let reset = NSButton(title: "Reset to Default", target: self, action: #selector(resetBudget(_:)))
         reset.bezelStyle = .rounded
 
+        let workspacesLabel = NSTextField(labelWithString: "Workspaces:")
+        workspacesLabel.alignment = .right
+
+        let resave = NSButton(
+            checkboxWithTitle: "Update workspace when leaving it",
+            target: self,
+            action: #selector(resaveChanged(_:))
+        )
+        resaveCheckbox = resave
+
+        let resaveCaption = NSTextField(wrappingLabelWithString:
+            "Switching away from a workspace first updates its snapshot with the current tabs and " +
+            "windows. Off: snapshots change only when you Save or Update.")
+        resaveCaption.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        resaveCaption.textColor = .secondaryLabelColor
+        resaveCaption.preferredMaxLayoutWidth = 300
+        resaveCaption.widthAnchor.constraint(lessThanOrEqualToConstant: 300).isActive = true
+
         let grid = NSGridView(views: [
             [appearanceLabel, appearance],
             [NSGridCell.emptyContentView, appearanceCaption],
             [label, control],
             [NSGridCell.emptyContentView, caption],
             [NSGridCell.emptyContentView, reset],
+            [workspacesLabel, resave],
+            [NSGridCell.emptyContentView, resaveCaption],
         ])
         grid.rowSpacing = 8
         grid.columnSpacing = 10
@@ -124,6 +153,8 @@ final class SettingsWindowController: NSObject {
         grid.rowAlignment = .firstBaseline
         // Breathing room between the appearance group and the budget group.
         grid.row(at: 2).topPadding = 12
+        // …and between the budget group and the workspaces group.
+        grid.row(at: 5).topPadding = 12
         return grid
     }
 
@@ -137,9 +168,9 @@ final class SettingsWindowController: NSObject {
 
     // MARK: - Actions
 
-    @objc private func appearanceChanged(_ sender: NSSegmentedControl) {
-        guard appearanceModes.indices.contains(sender.selectedSegment) else { return }
-        settings.appearanceMode = appearanceModes[sender.selectedSegment]
+    @objc private func appearanceChanged(_ sender: NSButton) {
+        guard appearanceModes.indices.contains(sender.tag) else { return }
+        settings.appearanceMode = appearanceModes[sender.tag]
         refresh()
     }
 
@@ -161,9 +192,16 @@ final class SettingsWindowController: NSObject {
         refresh()
     }
 
+    @objc private func resaveChanged(_ sender: NSButton) {
+        settings.resaveWorkspaceOnLeave = sender.state == .on
+        refresh()
+    }
+
     private func refresh() {
-        appearanceControl.selectedSegment = appearanceModes.firstIndex(of: settings.appearanceMode) ?? 0
+        let selected = appearanceModes.firstIndex(of: settings.appearanceMode) ?? 0
+        for button in appearanceButtons { button.state = button.tag == selected ? .on : .off }
         budgetField.stringValue = String(settings.hintBudget)
         budgetStepper.integerValue = settings.hintBudget
+        resaveCheckbox.state = settings.resaveWorkspaceOnLeave ? .on : .off
     }
 }

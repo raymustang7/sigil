@@ -26,6 +26,8 @@ final class SigilSettings {
 
     static let appearanceModeKey = "com.sigil.appearanceMode"
 
+    static let resaveWorkspaceOnLeaveKey = "com.sigil.workspaces.resaveOnLeave"
+
     /// Fired after any setting changes value.
     var onChange: (() -> Void)?
 
@@ -55,6 +57,18 @@ final class SigilSettings {
         set {
             guard newValue != appearanceMode else { return }
             defaults.set(newValue.rawValue, forKey: Self.appearanceModeKey)
+            onChange?()
+        }
+    }
+
+    /// When on, the workspace being left is re-snapshotted on every switch, so changes made while
+    /// in it (new tabs, moved windows) carry over. Off by default: snapshots change only on an
+    /// explicit Save or Update.
+    var resaveWorkspaceOnLeave: Bool {
+        get { defaults.bool(forKey: Self.resaveWorkspaceOnLeaveKey) }
+        set {
+            guard newValue != resaveWorkspaceOnLeave else { return }
+            defaults.set(newValue, forKey: Self.resaveWorkspaceOnLeaveKey)
             onChange?()
         }
     }

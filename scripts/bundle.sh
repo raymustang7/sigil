@@ -37,22 +37,39 @@ cp "bundle/AppIcon.icns" "$APP_DIR/Contents/Resources/AppIcon.icns"
 
 echo "==> Binary architectures: $(lipo -archs "$APP_DIR/Contents/MacOS/Sigil")"
 
-# Prefer the stable self-signed identity (so Accessibility permission survives rebuilds);
-# fall back to ad-hoc if it hasn't been created via scripts/create-signing-cert.sh.
-SIGN_IDENTITY="Sigil Self-Signed Dev"
+# Signing identity, in order of preference:
+#   1. $SIGN_IDENTITY, if set.
+#   2. A "Developer ID Application" certificate in the keychain. This gives the dev build the
+#      same code-signing identity as the released app, so macOS treats them as one app and a
+#      single Accessibility / Automation grant covers both and survives every rebuild.
+#   3. The self-signed identity from scripts/create-signing-cert.sh.
+#   4. Ad-hoc (permission must be re-granted after every build).
+SELF_SIGNED_IDENTITY="Sigil Self-Signed Dev"
 SIGN_KEYCHAIN="$HOME/Library/Keychains/sigil-signing.keychain-db"
 
-if [ -f "$SIGN_KEYCHAIN" ]; then
-    security unlock-keychain -p "sigil-dev" "$SIGN_KEYCHAIN" >/dev/null 2>&1 || true
+if [ -z "${SIGN_IDENTITY:-}" ]; then
+    SIGN_IDENTITY="$(security find-identity -v -p codesigning \
+        | sed -n 's/.*"\(Developer ID Application: [^"]*\)".*/\1/p' | head -1)"
 fi
 
-if security find-certificate -c "$SIGN_IDENTITY" >/dev/null 2>&1; then
-    echo "==> Code signing with '$SIGN_IDENTITY'…"
-    codesign --force --sign "$SIGN_IDENTITY" "$APP_DIR"
+if [ -n "$SIGN_IDENTITY" ]; then
+    echo "==> Code signing with '$SIGN_IDENTITY' (hardened runtime)…"
+    codesign --force --options runtime \
+        --entitlements "bundle/Sigil.entitlements" \
+        --sign "$SIGN_IDENTITY" "$APP_DIR"
 else
-    echo "==> Ad-hoc code signing (run scripts/create-signing-cert.sh for a stable identity)…"
-    codesign --force --sign - "$APP_DIR"
+    if [ -f "$SIGN_KEYCHAIN" ]; then
+        security unlock-keychain -p "sigil-dev" "$SIGN_KEYCHAIN" >/dev/null 2>&1 || true
+    fi
+    if security find-certificate -c "$SELF_SIGNED_IDENTITY" >/dev/null 2>&1; then
+        echo "==> Code signing with '$SELF_SIGNED_IDENTITY'…"
+        codesign --force --sign "$SELF_SIGNED_IDENTITY" "$APP_DIR"
+    else
+        echo "==> Ad-hoc code signing (run scripts/create-signing-cert.sh for a stable identity)…"
+        codesign --force --sign - "$APP_DIR"
+    fi
 fi
+codesign --verify --strict "$APP_DIR"
 
 echo "==> Done: $APP_DIR"
 echo "    Run with:  open \"$APP_DIR\""

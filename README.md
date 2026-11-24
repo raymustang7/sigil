@@ -1,107 +1,166 @@
+![Sigil logo](bundle/AppIcon-preview.png)
+
 # Sigil
 
-A keyboard-first navigation layer for macOS.
+Drive your whole Mac from the keyboard.
 
-Press a global hotkey, and Sigil overlays short keyboard hints on every visible,
-actionable UI element across all on-screen windows. Type a hint to click, focus, or activate
-that element without touching the mouse. A second hotkey opens a window switcher so you can
-jump to any window or app by typing its name. A third — *Visual mode* — lets you type an
-element's visible text (e.g. `issu` for a GitHub **Issues** tab) and activate it once it's the
-only match.
+## Why
 
-Universal UI hinting via the macOS Accessibility APIs
+Using the mouse to get around is slow. Every click means taking a hand off the keyboard,  
+finding the cursor, steering it across the screen (or across three screens), landing on a small  
+target, and coming back. You can see it infront of your eye but you can't reach it without dragging the cursor all the way to it.
+
+Browsers solved this years ago. [Vimium](https://github.com/philc/vimium), the Vim-style
+extension for Chrome, puts a short letter label on every link; you type the label and the link
+is clicked. Your hands never leave the keyboard. But Vimium stops at the edge of the web page: it
+can't reach the browser's own toolbar, let alone Finder, Slack, or a window on another display.
+
+Sigil brings that idea to all of macOS. One hotkey labels everything clickable in every visible
+window on every display, in any app. It also covers the other reasons you reach for the mouse:
+jumping between windows, and rearranging them when you change what you're working on.
+
+## Features
+
+### Keyboard hints
+
+Press **Control + Space**. Every element you could click (buttons, links, tabs, text fields,
+menu-bar items) gets a two-letter label. Type the two letters and Sigil activates that element
+for you.
+
+![Hints over a YouTube page: each control and each video in the sidebar has its own label](docs/images/hints-youtube.jpg)
+
+- Works in native apps, browsers and Electron apps alike. Sigil reads the same Accessibility
+information that VoiceOver uses, so apps need no plugin or integration
+- Covers every visible window on every display in a single pass, not only the frontmost app
+- Labels are always two characters, so every target costs the same two keystrokes
+
+![Close-up: the labels sit on the corner of each control](docs/images/hints-closeup.png)
+
+| Key | Action |
+|-----|--------|
+| **Control + Space** | Show or hide hints |
+| two letters | Activate the labelled element |
+| **Delete** | Undo the last typed character |
+| **Esc** | Cancel |
+
+### Window switcher
+
+Press **Control + Shift + Space** and start typing a window title or an app name. The list
+narrows as you type.
+
+| Key | Action |
+|-----|--------|
+| **Control + Shift + Space** | Open the switcher |
+| typing | Filter by window title or app name |
+| **1–9** or **Return** | Focus the chosen result |
+| **Esc** | Cancel |
+
+> Window titles are read through the Accessibility API, which only exposes windows on the
+> current Space. Windows on other Spaces are still reachable by their app name.
+
+### Workspace manager
+
+A workspace is a saved window layout for **one display**: which apps have windows there, where
+each window sits, and how they stack. Save one for each kind of work, such as coding, writing or
+a call, and switch between them instead of dragging windows around. Each display keeps its own
+list, so changing the workspace on one screen leaves the others alone.
+
+Open the Sigil menu → **Workspaces**:
+
+![The Workspaces submenu: saved workspaces listed under each display, with the active one ticked](docs/images/workspace_menu.png)
+
+- **Save Current as New Workspace…** snapshots what is on that display now
+- Click a workspace to switch to it. Apps that aren't running are launched, windows are moved
+back into place and re-stacked, and windows on that display that aren't part of the workspace
+are minimized, never closed
+- **Update “…” Snapshot** overwrites the active workspace with the current layout
+- **Delete…** removes a workspace
+
+Switch in Progress
+
+![Switching workspaces: the display is dimmed behind a “Switching to Work” message](docs/images/workspace_switch.png)
+
+Two apps are restored more deeply than position alone:
+
+- **Google Chrome**: the tabs of each window and which one is active. Missing tabs are
+reopened; existing tabs are never closed
+- **Claude desktop**: the chat each window was showing
+
+### Settings
+
+Open the Sigil menu → **Settings…**
+
+![The Settings window: appearance, hint budget and the workspace option](docs/images/settings.png)
+
+**Custom hint limit.** The *hint budget* is the most hints Sigil shows at once: 800 by default,
+adjustable from 100 to 1225. The budget is shared fairly across visible windows, so a busy
+front window never starves the ones behind it. Lower it for a calmer screen and a slightly
+faster scan; raise it if you keep many dense windows open. 1225 is the ceiling because that is
+how many two-character labels exist, which keeps every hint at two keystrokes.
+
+**Update workspace when leaving it.** Off by default, so a workspace changes only when you
+save or update it yourself. Turn it on and Sigil re-snapshots the workspace you are leaving on
+every switch, so tabs you opened and windows you moved are there when you come back.
+
+**Appearance.** Hints and Sigil's own windows can follow the system's Light/Dark setting or be
+pinned to either one.
 
 ## How it works
 
-| Step | Component |
-|------|-----------|
-| Intercept global hotkeys and route keystrokes to the active mode | `InputTap` (`CGEventTap`) / `InputCoordinator` |
-| Walk every visible window's Accessibility tree for actionable elements | `AccessibilityScanner` |
-| Generate short, unique, prefix-free labels | `HintGenerator` (Vimium-style) |
-| Convert AX ↔ Cocoa coordinates across all displays | `Geometry` |
-| Render labels in a click-through, always-on-top window | `OverlayController` / `OverlayView` |
-| Activate the target (AXPress → focus → synthetic click) | `ActionExecutor` |
-| Tie hint mode together (hotkey → scan → render → execute) | `HintModeController` |
-| Search and focus windows by name | `WindowSwitcher` / `WindowSwitcherController` / `SwitcherOverlay` |
-| Match elements by their visible text and confirm-to-activate | `VisualModeController` / `VisualOverlay` |
+Sigil is a small menu-bar app written in Swift, with no dependencies beyond the macOS SDK. It
+has no window of its own most of the time; it listens for its hotkeys and draws over other apps
+only while you are using it.
 
-The app runs as a menu-bar agent.
+**Hints** are a four-step pipeline, run each time you press the hotkey:
 
-## Default keys
+1. **Scan.** Sigil walks the Accessibility tree of every visible window and collects the
 
-**Hint mode**
+   elements that can be pressed or focused, skipping anything hidden behind another window.
+2. **Label.** The elements are trimmed to the hint budget, shared across windows, and each gets
 
-- **Control + Space** — toggle hint mode
-- Type a hint to activate its element
-- **Esc** — cancel
-- **Delete** — undo the last typed character
+   a unique two-character label.
+3. **Draw.** A transparent, click-through window on each display paints the labels over their
 
-- Hints cover every visible window on every display. Up to a **hint budget** of elements are
-  labelled (default 800, adjustable in **Settings…** from the menu-bar menu), shared fairly
-  across windows so a busy front window never starves the ones behind it. Labels are two
-  letters; digits join the alphabet only when a scan needs more than 676 hints.
+   targets. Nothing underneath is disturbed.
+4. **Act.** When you finish typing a label, Sigil presses the element through the Accessibility
 
-**Window switcher**
+   API. For web content that ignores that, it falls back to a synthetic mouse click at the
+     element's position.
 
-- **Control + Shift + Space** — open the window switcher
-- Type a window title or app name to filter
-- **1–9** or **Return** — focus the chosen result
-- **Esc** — cancel
+A single global keyboard tap sits in front of all this. It passes every keystroke through
+untouched until a hotkey fires, then routes keys to the active mode until that mode ends.
 
-**Visual mode** (sticky — stays on until you toggle it off)
+**Workspaces** are snapshots. Saving one records, for a single display, each window's app,
+position and stacking order, plus Chrome's tabs (read over AppleScript) and Claude's current chat
+(read from its Accessibility tree). Switching replays the snapshot: launch what's missing, move
+and re-stack windows, minimize the rest. Snapshots are plain JSON in
+`~/Library/Application Support/Sigil/workspaces.json`.
 
-> **Currently disabled** while it is evaluated: the hotkey is ignored and its menu items (including
-> the app/site blocklist, which only affects Visual mode) are hidden. Re-enable via
-> `SigilSettings.visualModeEnabled`.
-
-- **Control + Command + Option + Space** — toggle Visual mode on/off
-- While engaged, the menu-bar icon shows an eye badge on the `⌘`; the live query appears in the
-  Sigil dropdown menu
-- Matches only the **frontmost app's focused window** (and its menu bar), and re-scans on app
-  switches — so typed text never matches a background app or a stale/covered layout
-- Type an element's visible text (no input box); matches are ranked exact → prefix → substring
-- The query is built from **letters, spaces and periods** (spaces/periods can't be the first
-  character), so names like `pull requests` or `Package.swift` are typeable
-- **Key capture:** keys Visual mode uses are *consumed* so they don't also fire app/OS shortcuts —
-  the query keys, the **digit** that picks a numbered tie, the confirm **Return**, the toggle
-  chord, and **Esc/Delete** while a query exists. Everything it ignores — modifier chords
-  (Cmd+Tab, Cmd+`` ` ``), arrows, other punctuation — passes through untouched. While a text field
-  is focused, keys pass through so you can type into it normally.
-- Once **2 or fewer** elements match they're highlighted on screen (numbered 1–2 when tied); keep
-  typing to narrow, or press the **digit** to pick a tie
-- A unique best match gets an "↵ navigate to …" popup (centred, 1/3 down the screen) — press
-  **Return** within 3s to go there
-- After navigating the mode stays engaged and re-scans, so you can keep moving around
-- **Delete** removes the last character; **Cmd+Delete** or **Esc** clears the whole query (none
-  exit the mode)
-- Exit via the hotkey again, or **Exit Visual Mode** in the menu-bar menu
-
-**Blocklist** (Visual mode only) — keep the mode out of apps/sites where it gets in the way:
-
-- From the menu bar: **Block This App** (the frontmost app), **Block This Site** (the current
-  browser tab's domain), **Add Blocked Site…** (type a domain like `youtube.com`), and a
-  **Blocked ▸** submenu to remove entries
-- On a blocked app or site Visual mode goes transparent — every key passes straight through and no
-  query is built — while staying engaged, so it resumes the moment you leave. The dropdown shows
-  *"Paused on …"* while suppressed
-- Site matching covers subdomains (`youtube.com` blocks `www.`/`m.`/`music.youtube.com`)
-- The current site is read via the browser's scripting interface (Safari and Chrome-based browsers;
-  Firefox can't expose its URL, so block it by app instead). This needs **Automation permission**
-  for that browser — macOS prompts the first time. If it's denied or unavailable, Sigil simply
-  doesn't suppress (it never silently stops working)
-
-> Window titles are read via the Accessibility API, which only exposes windows on the current
-> Space. Windows on other Spaces are reachable by their app name.
+| Concern | Component |
+|---------|-----------|
+| Global hotkeys and keystroke routing | `InputTap` (`CGEventTap`) / `InputCoordinator` |
+| Finding actionable elements in every visible window | `AccessibilityScanner` |
+| Sharing the hint budget across windows | `HintBudget` |
+| Short, unique labels | `HintGenerator` |
+| Accessibility ↔ screen coordinates across displays | `Geometry` |
+| Click-through overlay | `OverlayController` / `OverlayView` |
+| Activating the target (press → focus → synthetic click) | `ActionExecutor` |
+| Hint mode end to end | `HintModeController` |
+| Window switcher | `WindowSwitcher` / `WindowSwitcherController` / `SwitcherOverlay` |
+| Workspaces | `WorkspaceMenuController` / `WorkspaceSwitcher` / `WorkspaceStore` |
+| Settings | `SigilSettings` / `SettingsWindowController` |
 
 ## Requirements
 
-- macOS 13+
-- Xcode / Swift 6 toolchain
-- **Accessibility permission** (System Settings → Privacy & Security → Accessibility).
-  Sigil prompts on first launch; the menu-bar item shows a ⚠︎ until access is granted, then
-  starts automatically.
+- macOS 13 or later
+- Xcode with the Swift 6 toolchain, to build
+- **Accessibility permission** (System Settings → Privacy & Security → Accessibility). Sigil
+asks on first launch; the menu-bar icon shows a ⚠︎ until access is granted, then Sigil starts
+on its own
+- **Automation permission for Google Chrome**, only if you use workspaces with Chrome. macOS
+asks the first time Sigil reads or restores Chrome's tabs
 
-## Build & run
+## Build and run
 
 ```bash
 # Build and assemble a code-signed .app bundle
@@ -111,14 +170,27 @@ The app runs as a menu-bar agent.
 open .build/Sigil.app
 ```
 
-> A real `.app` bundle is required: macOS keys Accessibility permission on bundle identity, so
-> running the bare SwiftPM binary leads to flaky permission behaviour.
+A real `.app` bundle is required: macOS ties the Accessibility grant to the app's bundle
+identity and code signature, so running the bare SwiftPM binary gives flaky permission
+behaviour.
 
-For a quick compile check during development:
+`bundle.sh` signs with a *Developer ID Application* certificate if your keychain has one. If
+not, it falls back to a self-signed identity (create it once with
+`./scripts/create-signing-cert.sh`) so the permission grant survives rebuilds, and finally to
+ad-hoc signing, which loses the grant on every build. Set `SIGN_IDENTITY` to choose an identity
+yourself.
+
+For a quick compile check or to run the tests during development:
 
 ```bash
 swift build
 ```
+
+```bash
+swift test
+```
+
+To package a distributable `.dmg`, see `scripts/dmg.sh`.
 
 ## License
 
